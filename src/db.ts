@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { DurabilityCache } from './durability.js';
-import type { Snapshot } from './types.js';
+import type { ChangeRecord, Snapshot } from './types.js';
 
 /**
  * SQLite store: the latest snapshot per repo, plus a durability cache.
@@ -32,7 +32,17 @@ export class Store {
     const row = repo
       ? this.db.prepare('SELECT data FROM snapshots WHERE repo = ?').get(repo)
       : this.db.prepare('SELECT data FROM snapshots ORDER BY collected_at DESC LIMIT 1').get();
-    return row ? (JSON.parse(String(row.data)) as Snapshot) : null;
+    if (!row) return null;
+    const snap = JSON.parse(String(row.data)) as Snapshot & { prs?: Omit<ChangeRecord, 'kind' | 'id'>[] };
+    // Snapshots from 0.1.x stored PRs under `prs`, before commit mode existed.
+    if (snap.prs && !snap.changes) {
+      snap.changes = snap.prs.map((p) => ({ ...p, kind: 'pr', id: `#${p.number}` }));
+      snap.branch ??= snap.defaultBranch;
+      snap.unit ??= 'prs';
+      snap.notes ??= [];
+      delete snap.prs;
+    }
+    return snap;
   }
 
   durabilityCache(): DurabilityCache {

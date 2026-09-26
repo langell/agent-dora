@@ -26,6 +26,11 @@ Options:
   --path <dir>          Local clone with full history (default: .)
   --db <file>           SQLite cache (default: <path>/.agent-dora/cache.db)
   --out <dir>           Report output directory (default: agent-dora-report)
+  --unit <auto|prs|commits>
+                        What counts as a change: merged PRs, or commits on the
+                        branch. auto picks commits when most changes skip PRs
+                        (default: auto)
+  --branch <name>       Branch to measure (default: the repo's default branch)
   --since <days>        How far back to collect (default: 180)
   --window <days>       Durability window (default: 21)
   --threshold <0-1>     Share of added lines that must survive (default: 0.7)
@@ -45,6 +50,8 @@ export async function main(argv: string[]): Promise<void> {
       db: { type: 'string' },
       out: { type: 'string', default: 'agent-dora-report' },
       since: { type: 'string' },
+      unit: { type: 'string' },
+      branch: { type: 'string' },
       window: { type: 'string' },
       threshold: { type: 'string' },
       pr: { type: 'string' },
@@ -59,6 +66,8 @@ export async function main(argv: string[]): Promise<void> {
 
   const repoPath = resolve(values.path!);
   const overrides: Partial<Config> = {};
+  if (values.unit) overrides.unit = values.unit as Config['unit'];
+  if (values.branch) overrides.branch = values.branch;
   if (values.since) overrides.sinceDays = positiveNumber('--since', values.since);
   if (values.window) overrides.windowDays = positiveNumber('--window', values.window);
   if (values.threshold) overrides.survivalThreshold = positiveNumber('--threshold', values.threshold);
@@ -79,7 +88,8 @@ export async function main(argv: string[]): Promise<void> {
       const store = new Store(dbPath);
       try {
         const snap = await collect({ repoPath, gh: await github(), cfg, store, log });
-        log(`Collected ${snap.prs.length} merged and ${snap.openPrs.length} open PRs.`);
+        const noun = snap.unit === 'commits' ? 'commits' : 'merged PRs';
+        log(`Collected ${snap.changes.length} ${noun} on ${snap.branch}, and ${snap.openPrs.length} open PRs.`);
         if (command === 'run') writeReport(store, snap.repo, resolve(values.out!), log);
       } finally {
         store.close();

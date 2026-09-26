@@ -43,9 +43,10 @@ export interface RawIssue {
 
 export type ReworkKind = 'revert' | 'rework' | 'bug';
 
-/** Evidence that a merged PR needed fixing after it shipped. */
+/** Evidence that a change needed fixing after it shipped. */
 export interface ReworkEvent {
-  target: number;
+  /** PR number or full commit SHA of the change that needed fixing. */
+  target: number | string;
   kind: ReworkKind;
   at: string;
   source: string;
@@ -60,8 +61,15 @@ export interface Durability {
   reason?: string;
 }
 
-export interface PrRecord {
-  number: number;
+/** What counts as one change: a merged pull request, or a commit on the branch. */
+export type Unit = 'prs' | 'commits';
+
+export interface ChangeRecord {
+  kind: 'pr' | 'commit';
+  /** Display id: "#123" for a PR, a short SHA for a commit. */
+  id: string;
+  /** PR number; null for commits. */
+  number: number | null;
   title: string;
   url: string;
   author: string | null;
@@ -92,10 +100,15 @@ export interface OpenPrRecord {
 export interface Snapshot {
   repo: string;
   defaultBranch: string;
+  /** Branch the changes landed on. */
+  branch: string;
+  unit: Unit;
   collectedAt: string;
   since: string;
   windowDays: number;
   survivalThreshold: number;
-  prs: PrRecord[];
+  changes: ChangeRecord[];
   openPrs: OpenPrRecord[];
+  /** Things the reader should know about how this data was collected. */
+  notes: string[];
 }

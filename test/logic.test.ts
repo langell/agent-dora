@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { classify, isIgnoredAuthor } from '../src/classify.js';
 import { DEFAULT_CONFIG, fileMatcher, globToRegExp } from '../src/config.js';
-import { aggregate, buildRecord, isDurable, median } from '../src/metrics.js';
+import { aggregate, buildPrRecord, isDurable, median } from '../src/metrics.js';
 import { renderHtml, renderMarkdown } from '../src/report.js';
 import { findRework } from '../src/rework.js';
 import type { RawPr, Snapshot } from '../src/types.js';
@@ -67,7 +67,7 @@ test('rework: git reverts, GitHub revert PRs, rework labels, caused-by', () => {
   assert.deepEqual(byTarget(2), ['revert']); // body and title both point here; deduped per source
   assert.deepEqual(byTarget(3), ['rework']);
   assert.deepEqual(byTarget(4), ['bug']);
-  assert.equal(events.filter((e) => e.target >= 10).length, 0);
+  assert.equal(events.filter((e) => Number(e.target) >= 10).length, 0);
 });
 
 test('rework before the target merged is ignored', () => {
@@ -102,11 +102,11 @@ function snapshot(): Snapshot {
     const createdAt = new Date(now - daysAgo * DAY - 2 * DAY).toISOString();
     const raw = pr({ number: n, mergedAt, createdAt, commits: [{ oid: `c${n}`, message: 'x', authoredDate: createdAt }], reviews: [{ submittedAt: new Date(now - daysAgo * DAY - DAY).toISOString(), author: 'bob' }] });
     const d = daysAgo > 21 ? { status: 'measured' as const, baseline: 10, surviving } : { status: 'pending' as const, baseline: 0, surviving: 0 };
-    return buildRecord(raw, cls, 'test', [], d, cfg);
+    return buildPrRecord(raw, cls, 'test', [], d, cfg);
   };
   return {
-    repo: 'o/r', defaultBranch: 'main', collectedAt: new Date(now).toISOString(), since, windowDays: 21, survivalThreshold: 0.7,
-    prs: [rec(1, 'agent', 60, 10), rec(2, 'agent', 50, 2), rec(3, 'assisted', 40, 9), rec(4, 'human', 30, 10), rec(5, 'human', 5, 0)],
+    repo: 'o/r', defaultBranch: 'main', branch: 'main', unit: 'prs', notes: [], collectedAt: new Date(now).toISOString(), since, windowDays: 21, survivalThreshold: 0.7,
+    changes: [rec(1, 'agent', 60, 10), rec(2, 'agent', 50, 2), rec(3, 'assisted', 40, 9), rec(4, 'human', 30, 10), rec(5, 'human', 5, 0)],
     openPrs: [{ number: 9, title: '<b>open</b>', url: 'https://x', authorClass: 'agent', createdAt: new Date(now - 3 * DAY).toISOString(), awaitingFirstReview: true }],
   };
 }
@@ -122,8 +122,10 @@ test('aggregate', () => {
   assert.equal(r.stats.all.reviewWaitP50Hours, 24);
   assert.equal(r.stats.all.leadTimeP50Hours, 48);
   assert.equal(r.stats.agent.awaitingReview, 1);
-  assert.ok(Math.abs(r.maturedWeeks - 7) < 1e-9);
-  assert.ok(Math.abs(r.stats.all.durablePerWeek! - 3 / 7) < 1e-9);
+  // Period runs from the first change (60 days ago) to 21 days ago: 39 days.
+  assert.ok(Math.abs(r.maturedWeeks - 39 / 7) < 1e-9);
+  assert.ok(Math.abs(r.stats.all.durablePerWeek! - 3 / (39 / 7)) < 1e-9);
+  assert.equal(r.weeks[0]!.week, '2026-01-26', 'weekly series starts at the first change, not at since');
   const weeklyDurable = r.weeks.reduce((s, w) => s + w.durable.all, 0);
   assert.equal(weeklyDurable, 3);
   assert.ok(r.weeks.at(-1)!.matured === false);
@@ -136,4 +138,25 @@ test('report renders and escapes', () => {
   assert.ok(!html.includes('<b>open</b>'), 'raw HTML from PR titles must be escaped in embedded JSON');
   const md = renderMarkdown(r);
   assert.match(md, /\| Durable rate \| 50% \| 100% \| 100% \| 75% \|/);
+});
+
+test('durable per week is empty, not zero, when nothing has matured', () => {
+  const snap = snapshot();
+  snap.changes = snap.changes.filter((c) => c.durable === null);
+  const r = aggregate(snap);
+  assert.equal(r.stats.all.durablePerWeek, null);
+  assert.match(renderMarkdown(r), /\| Durable PRs \/ week \| — \| — \| — \| — \|/);
+  assert.match(renderMarkdown(r), /Not enough history yet/);
+});
+
+test('report wording follows the unit', () => {
+  const snap = snapshot();
+  snap.unit = 'commits';
+  snap.notes = ['Most changes bypass pull requests'];
+  const md = renderMarkdown(aggregate(snap));
+  assert.match(md, /counting commits/);
+  assert.match(md, /\| Commits \|/);
+  assert.match(md, /Durable commits \/ week/);
+  assert.doesNotMatch(md, /Time to first review/);
+  assert.match(md, /> Most changes bypass pull requests/);
 });

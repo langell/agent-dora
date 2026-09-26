@@ -2,6 +2,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface Config {
+  /**
+   * What counts as one change. `prs`: merged pull requests. `commits`: each commit on the
+   * branch. `auto`: commits when most changes on the branch bypass pull requests.
+   */
+  unit: 'auto' | 'prs' | 'commits';
+  /** Branch to measure. Defaults to the repository's default branch. */
+  branch?: string;
   /** How long a change must survive before it counts as durable. */
   windowDays: number;
   /** Minimum share of a PR's added lines that must survive the window. */
@@ -30,6 +37,7 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
+  unit: 'auto',
   windowDays: 21,
   survivalThreshold: 0.7,
   sinceDays: 180,
@@ -103,6 +111,9 @@ export function loadConfig(repoPath: string, overrides: Partial<Config> = {}): C
   };
   if (!(merged.survivalThreshold > 0 && merged.survivalThreshold <= 1)) {
     throw new Error(`survivalThreshold must be in (0, 1], got ${merged.survivalThreshold}`);
+  }
+  if (!['auto', 'prs', 'commits'].includes(merged.unit)) {
+    throw new Error(`unit must be auto, prs or commits, got "${merged.unit}"`);
   }
   if (!(merged.windowDays > 0)) throw new Error(`windowDays must be positive, got ${merged.windowDays}`);
   return merged;

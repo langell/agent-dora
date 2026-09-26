@@ -19,32 +19,62 @@ interface Row {
   value: (s: ClassStats) => string;
 }
 
-export const ROWS: Row[] = [
-  { label: 'Merged PRs', hint: 'PRs merged into the default branch in the period', value: (s) => String(s.merged) },
-  { label: 'Durable PRs / week', hint: 'Matured PRs that were not reverted or reworked and kept enough of their lines', value: (s) => num(s.durablePerWeek) },
-  { label: 'Durable rate', hint: 'Share of matured PRs that were durable', value: (s) => pct(s.durableRate) },
-  { label: 'Line churn', hint: 'Share of added lines gone by the end of the window', value: (s) => pct(s.churn) },
-  { label: 'Change failure rate', hint: 'Matured PRs reverted, reworked or blamed for a bug within the window', value: (s) => pct(s.changeFailureRate) },
-  { label: 'Lead time (p50)', hint: 'First commit to merge', value: (s) => duration(s.leadTimeP50Hours) },
-  { label: 'Time to first review (p50)', hint: 'PR opened to first review by someone else', value: (s) => duration(s.reviewWaitP50Hours) },
-  { label: 'PR size (p50)', hint: 'Lines added plus deleted', value: (s) => num(s.sizeP50, 0) },
-  { label: 'Open PRs awaiting review', hint: 'Non-draft open PRs with no review yet', value: (s) => String(s.awaitingReview) },
-];
+export interface Nouns {
+  /** "PRs" or "commits" */
+  plural: string;
+  /** Row label for the count */
+  count: string;
+  /** Section heading for the change list */
+  heading: string;
+  /** Table column heading */
+  column: string;
+  /** "merging" or "landing" */
+  landing: string;
+}
+
+export function nouns(unit: Report['unit']): Nouns {
+  return unit === 'commits'
+    ? { plural: 'commits', count: 'Commits', heading: 'Commits', column: 'Commit', landing: 'landing' }
+    : { plural: 'PRs', count: 'Merged PRs', heading: 'Pull requests', column: 'PR', landing: 'merging' };
+}
+
+export function rows(r: Report): Row[] {
+  const n = nouns(r.unit);
+  return [
+    { label: n.count, hint: `${n.count} on ${r.branch} in the period`, value: (s) => String(s.merged) },
+    { label: `Durable ${n.plural} / week`, hint: `Matured ${n.plural} that were not reverted or reworked and kept enough of their lines`, value: (s) => num(s.durablePerWeek) },
+    { label: 'Durable rate', hint: `Share of matured ${n.plural} that were durable`, value: (s) => pct(s.durableRate) },
+    { label: 'Line churn', hint: 'Share of added lines gone by the end of the window', value: (s) => pct(s.churn) },
+    { label: 'Change failure rate', hint: `Matured ${n.plural} reverted, reworked or blamed for a bug within the window`, value: (s) => pct(s.changeFailureRate) },
+    { label: 'Lead time (p50)', hint: `First commit to ${n.landing === 'merging' ? 'merge' : 'landing on the branch'}`, value: (s) => duration(s.leadTimeP50Hours) },
+    ...(r.unit === 'prs' ? [{ label: 'Time to first review (p50)', hint: 'PR opened to first review by someone else', value: (s: ClassStats) => duration(s.reviewWaitP50Hours) }] : []),
+    { label: `${r.unit === 'commits' ? 'Commit' : 'PR'} size (p50)`, hint: 'Lines added plus deleted', value: (s) => num(s.sizeP50, 0) },
+    { label: 'Open PRs awaiting review', hint: 'Non-draft open PRs with no review yet', value: (s) => String(s.awaitingReview) },
+  ];
+}
+
+/** Why most numbers are empty, if they are. */
+function emptyReason(r: Report): string | null {
+  if (r.stats.all.merged === 0) return `No ${nouns(r.unit).plural} on ${r.branch} since ${r.since.slice(0, 10)}.`;
+  if (r.stats.all.matured > 0) return null;
+  const n = nouns(r.unit);
+  return `Not enough history yet: ${n.plural} need ${r.windowDays} days after ${n.landing} before they count toward durability.`;
+}
 
 export function renderMarkdown(r: Report): string {
   const lines = [
     `## agent-dora: ${r.repo}`,
     '',
-    `Since ${r.since.slice(0, 10)} · durability window ${r.windowDays} days · survival threshold ${pct(r.survivalThreshold)}`,
+    `${r.branch} · counting ${nouns(r.unit).plural} · since ${r.since.slice(0, 10)} · durability window ${r.windowDays} days · survival threshold ${pct(r.survivalThreshold)}`,
     '',
+    ...r.notes.flatMap((n) => [`> ${n}`, '']),
     `| Metric | ${KEYS.map((k) => CLASS_NAMES[k]).join(' | ')} |`,
     `|---|${KEYS.map(() => '--:').join('|')}|`,
-    ...ROWS.map((row) => `| ${row.label} | ${KEYS.map((k) => row.value(r.stats[k])).join(' | ')} |`),
+    ...rows(r).map((row) => `| ${row.label} | ${KEYS.map((k) => row.value(r.stats[k])).join(' | ')} |`),
     '',
   ];
-  if (r.maturedWeeks < 1) {
-    lines.push(`> Not enough history yet: PRs need ${r.windowDays} days after merging before they count as durable.`, '');
-  }
+  const empty = emptyReason(r);
+  if (empty) lines.push(`> ${empty}`, '');
   return lines.join('\n');
 }
 
@@ -54,6 +84,7 @@ export function renderHtml(r: Report): string {
   // Keep the embedded JSON from closing the <script> tag early.
   const data = JSON.stringify(r).replace(/</g, '\\u003c');
   const a = r.stats.all;
+  const n = nouns(r.unit);
   const tile = (label: string, value: string, sub: string) =>
     `<div class="tile"><div class="tile-label">${esc(label)}</div><div class="tile-value">${esc(value)}</div><div class="tile-sub">${esc(sub)}</div></div>`;
 
@@ -121,6 +152,7 @@ th { color: var(--ink-2); font-weight: 600; }
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
 tr:hover td { background: var(--wash); }
 .hint { color: var(--muted); font-size: 12px; }
+.nw { white-space: nowrap; }
 .badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status-good { color: var(--good); }
 .status-bad { color: var(--critical); }
@@ -134,22 +166,22 @@ footer { margin-top: 48px; color: var(--muted); font-size: 12px; }
 <header>
   <div class="eyebrow">agent-dora</div>
   <h1>${esc(r.repo)}</h1>
-  <div class="meta">${esc(r.defaultBranch)} · since ${r.since.slice(0, 10)} · durability window ${r.windowDays} days · survival threshold ${pct(r.survivalThreshold)} · collected ${r.collectedAt.slice(0, 16).replace('T', ' ')} UTC</div>
+  <div class="meta">${esc(r.branch)} · counting ${nouns(r.unit).plural} · since ${r.since.slice(0, 10)} · durability window ${r.windowDays} days · survival threshold ${pct(r.survivalThreshold)} · collected ${r.collectedAt.slice(0, 16).replace('T', ' ')} UTC</div>
 </header>
 
-${r.maturedWeeks < 1 ? `<div class="banner">Not enough history yet. PRs need ${r.windowDays} days after merging before they count toward durability, so most numbers below are still empty.</div>` : ''}
+${[...r.notes, ...(emptyReason(r) ? [emptyReason(r)!] : [])].map((n) => `<div class="banner">${esc(n)}</div>`).join('\n')}
 
 <div class="tiles">
-  ${tile('Durable PRs / week', num(a.durablePerWeek), `${a.durable} of ${a.matured} matured PRs`)}
-  ${tile('Durable rate', pct(a.durableRate), 'matured PRs that held up')}
+  ${tile(`Durable ${n.plural} / week`, num(a.durablePerWeek), `${a.durable} of ${a.matured} matured ${n.plural}`)}
+  ${tile('Durable rate', pct(a.durableRate), `matured ${n.plural} that held up`)}
   ${tile('Line churn', pct(a.churn), `added lines gone after ${r.windowDays} days`)}
   ${tile('Change failure rate', pct(a.changeFailureRate), 'reverted, reworked or caused a bug')}
   ${tile('Awaiting review', String(a.awaitingReview), a.awaitingReviewAgeP50Hours === null ? 'open PRs with no review' : `median wait ${duration(a.awaitingReviewAgeP50Hours)}`)}
 </div>
 
 <section class="card">
-  <h2>Durable PRs per week</h2>
-  <p class="note">Weeks whose PRs have all passed the ${r.windowDays}-day window. Recent weeks appear once they mature.</p>
+  <h2>Durable ${n.plural} per week</h2>
+  <p class="note">Weeks whose ${n.plural} have all passed the ${r.windowDays}-day window. Recent weeks appear once they mature.</p>
   <div class="legend" id="legend"></div>
   <div class="chart" id="weekly"></div>
 </section>
@@ -167,7 +199,7 @@ ${r.maturedWeeks < 1 ? `<div class="banner">Not enough history yet. PRs need ${r
   <p class="note">Agent: opened by a coding agent. Assisted: human-opened, with AI co-authored commits. Human: no AI signal.</p>
   <div class="scroll"><table>
     <thead><tr><th>Metric</th>${KEYS.map((k) => `<th class="n">${CLASS_NAMES[k]}</th>`).join('')}</tr></thead>
-    <tbody>${ROWS.map((row) => `<tr><td>${esc(row.label)}<div class="hint">${esc(row.hint)}</div></td>${KEYS.map((k) => `<td class="n">${esc(row.value(r.stats[k]))}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tbody>${rows(r).map((row) => `<tr><td>${esc(row.label)}<div class="hint">${esc(row.hint)}</div></td>${KEYS.map((k) => `<td class="n">${esc(row.value(r.stats[k]))}</td>`).join('')}</tr>`).join('')}</tbody>
   </table></div>
 </section>
 
@@ -178,7 +210,7 @@ ${r.maturedWeeks < 1 ? `<div class="banner">Not enough history yet. PRs need ${r
 </section>
 
 <section class="card">
-  <h2>Pull requests</h2>
+  <h2>${n.heading}</h2>
   <div class="controls">
     <label>Author <select id="filter-class"><option value="">All</option><option value="agent">Agent</option><option value="assisted">Assisted</option><option value="human">Human</option></select></label>
     <label>Status <select id="filter-status"><option value="">All</option><option value="durable">Durable</option><option value="failed">Not durable</option><option value="pending">Maturing</option><option value="unknown">Unknown</option></select></label>
@@ -198,12 +230,13 @@ ${CLIENT_JS}
 `;
 }
 
-/** Client-side rendering: charts, hover tooltips and PR table filters. No dependencies. */
+/** Client-side rendering: charts, hover tooltips and table filters. No dependencies. */
 const CLIENT_JS = String.raw`
 const R = JSON.parse(document.getElementById('data').textContent);
 const CLASSES = ['agent', 'assisted', 'human'];
 const NAMES = { agent: 'Agent', assisted: 'Assisted', human: 'Human', all: 'All' };
 const NS = 'http://www.w3.org/2000/svg';
+const NOUN = R.unit === 'commits' ? { plural: 'commits', column: 'Commit', date: 'Landed' } : { plural: 'PRs', column: 'PR', date: 'Merged' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';');
 const pct = (x) => (x === null || x === undefined ? '—' : Math.round(x * 100) + '%');
 const color = (c) => 'var(--' + c + ')';
@@ -251,7 +284,7 @@ function lineChart(host) {
   const max = niceMax(Math.max(1, ...weeks.flatMap((w) => CLASSES.map((c) => w.durable[c]))));
   const x = (i) => m.l + (i / (weeks.length - 1)) * iw;
   const y = (v) => m.t + ih - (v / max) * ih;
-  const svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, height: H, role: 'img', 'aria-label': 'Durable PRs per week by author' }, host);
+  const svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, height: H, role: 'img', 'aria-label': 'Durable ' + NOUN.plural + ' per week by author' }, host);
   for (let i = 0; i <= 4; i++) {
     const v = (max / 4) * i;
     el('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), stroke: i ? 'var(--grid)' : 'var(--axis)', 'stroke-width': 1 }, svg);
@@ -333,16 +366,16 @@ function prTable() {
   const t = document.getElementById('prs');
   const fc = document.getElementById('filter-class'), fs = document.getElementById('filter-status');
   const draw = () => {
-    const rows = R.prs.filter((p) => (!fc.value || p.authorClass === fc.value) && (!fs.value || status(p)[0] === fs.value));
-    document.getElementById('pr-count').textContent = rows.length + ' PRs';
-    t.innerHTML = '<thead><tr><th>PR</th><th>Author</th><th>Merged</th><th class="n">Size</th><th class="n">Lines kept</th><th>Status</th><th>Rework</th></tr></thead><tbody>' +
+    const rows = R.changes.filter((p) => (!fc.value || p.authorClass === fc.value) && (!fs.value || status(p)[0] === fs.value));
+    document.getElementById('pr-count').textContent = rows.length + ' ' + NOUN.plural;
+    t.innerHTML = '<thead><tr><th>' + NOUN.column + '</th><th>Author</th><th>' + NOUN.date + '</th><th class="n">Size</th><th class="n">Lines kept</th><th>Status</th><th>Rework</th></tr></thead><tbody>' +
       rows.slice(0, 500).map((p) => {
         const d = p.durability;
         const kept = d.status === 'measured' ? pct(d.surviving / d.baseline) : '—';
         const rw = p.rework.map((e) => e.kind + ' ' + esc(e.source)).join(', ');
-        return '<tr><td><a href="' + esc(p.url) + '">#' + p.number + '</a> ' + esc(p.title) + '</td>' +
+        return '<tr><td><a href="' + esc(p.url) + '">' + esc(p.id) + '</a> ' + esc(p.title) + '</td>' +
           '<td><span class="badge" title="' + esc(p.classReason) + '">' + swatch(p.authorClass) + NAMES[p.authorClass] + '</span></td>' +
-          '<td>' + p.mergedAt.slice(0, 10) + '</td><td class="n">' + p.size + '</td><td class="n">' + kept + '</td>' +
+          '<td class="nw">' + p.mergedAt.slice(0, 10) + '</td><td class="n">' + p.size + '</td><td class="n">' + kept + '</td>' +
           '<td>' + status(p)[1] + '</td><td class="hint">' + rw + '</td></tr>';
       }).join('') + '</tbody>';
   };
@@ -354,7 +387,7 @@ function prTable() {
 function drawCharts() {
   for (const id of ['weekly', 'bar-durable', 'bar-churn', 'bar-cfr']) document.getElementById(id).innerHTML = '';
   lineChart(document.getElementById('weekly'));
-  barChart(document.getElementById('bar-durable'), 'durableRate', (s) => s.durable + ' of ' + s.matured + ' matured PRs');
+  barChart(document.getElementById('bar-durable'), 'durableRate', (s) => s.durable + ' of ' + s.matured + ' matured ' + NOUN.plural);
   barChart(document.getElementById('bar-churn'), 'churn', () => 'of added lines gone after ' + R.windowDays + ' days');
   barChart(document.getElementById('bar-cfr'), 'changeFailureRate', (s) => s.reverts + ' reverted');
 }

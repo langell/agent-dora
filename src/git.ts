@@ -139,3 +139,58 @@ export async function revertCommits(repoPath: string, ref: string, since: Date):
 export async function expandOid(repoPath: string, short: string): Promise<string | null> {
   return (await tryGit(repoPath, ['rev-parse', '--verify', '--quiet', `${short}^{commit}`]))?.trim() || null;
 }
+
+export interface BranchCommit {
+  oid: string;
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  authoredAt: string;
+  committedAt: string;
+  message: string;
+}
+
+/** Commits on the first-parent chain of `ref` committed on or after `since`, newest first. */
+export async function firstParentCommits(repoPath: string, ref: string, since: Date): Promise<BranchCommit[]> {
+  const out = await git(repoPath, ['log', '--first-parent', `--since=${since.toISOString()}`, '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cI%x1f%B%x1e', ref]);
+  return out
+    .split('\x1e')
+    .map((r) => r.replace(/^\n/, ''))
+    .filter(Boolean)
+    .map((r) => {
+      const [oid, parents, authorName, authorEmail, authoredAt, committedAt, message] = r.split('\x1f');
+      return {
+        oid: oid!,
+        parents: (parents ?? '').split(' ').filter(Boolean),
+        authorName: authorName ?? '',
+        authorEmail: authorEmail ?? '',
+        authoredAt: authoredAt!,
+        committedAt: committedAt!,
+        message: (message ?? '').trim(),
+      };
+    });
+}
+
+/** Full messages and author dates of the commits in `range` (e.g. "a..b"). */
+export async function commitsIn(repoPath: string, range: string): Promise<{ oid: string; authoredAt: string; message: string }[]> {
+  const out = await git(repoPath, ['log', '--format=%H%x1f%aI%x1f%B%x1e', range]);
+  return out
+    .split('\x1e')
+    .map((r) => r.replace(/^\n/, ''))
+    .filter(Boolean)
+    .map((r) => {
+      const [oid, authoredAt, message] = r.split('\x1f');
+      return { oid: oid!, authoredAt: authoredAt!, message: (message ?? '').trim() };
+    });
+}
+
+/** Lines added plus deleted between two commits, ignoring binary files. */
+export async function diffSize(repoPath: string, from: string, to: string): Promise<number> {
+  const out = await git(repoPath, ['diff', '--numstat', '--no-renames', from, to]);
+  let n = 0;
+  for (const line of out.split('\n')) {
+    const [a, d] = line.split('\t');
+    if (a && a !== '-') n += Number(a) + Number(d);
+  }
+  return n;
+}

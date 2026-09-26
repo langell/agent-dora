@@ -18,6 +18,12 @@ inputs:
   output-dir:
     description: Where to write index.html, metrics.json and summary.md.
     default: agent-dora-report
+  unit:
+    description: "What counts as a change: auto, prs or commits (default auto: commits when most changes skip PRs)."
+    default: ""
+  branch:
+    description: Branch to measure (default: the repository's default branch).
+    default: ""
   since-days:
     description: How many days of merged PRs to include (default 180).
     default: ""
@@ -68,6 +74,8 @@ runs:
         AD_COMMAND: ${{ inputs.command }}
         AD_PATH: ${{ inputs.path }}
         AD_OUT: ${{ inputs.output-dir }}
+        AD_UNIT: ${{ inputs.unit }}
+        AD_BRANCH: ${{ inputs.branch }}
         AD_SINCE: ${{ inputs.since-days }}
         AD_WINDOW: ${{ inputs.window-days }}
         AD_THRESHOLD: ${{ inputs.threshold }}
@@ -75,6 +83,8 @@ runs:
         AD_REPO: ${{ github.repository }}
       run: |
         args=("$AD_COMMAND" --repo "$AD_REPO" --path "$AD_PATH")
+        [ -n "$AD_UNIT" ] && args+=(--unit "$AD_UNIT")
+        [ -n "$AD_BRANCH" ] && args+=(--branch "$AD_BRANCH")
         [ -n "$AD_SINCE" ] && args+=(--since "$AD_SINCE")
         [ -n "$AD_WINDOW" ] && args+=(--window "$AD_WINDOW")
         [ -n "$AD_THRESHOLD" ] && args+=(--threshold "$AD_THRESHOLD")
