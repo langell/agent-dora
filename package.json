@@ -1,6 +1,6 @@
 {
   "name": "agent-dora",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Delivery metrics for teams shipping with AI coding agents: durable throughput, churn and DORA-style metrics split by agent, assisted and human authorship.",
   "type": "module",
   "license": "MIT",
