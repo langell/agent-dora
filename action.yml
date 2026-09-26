@@ -1,0 +1,90 @@
+name: agent-dora
+description: Durable throughput, churn and DORA-style delivery metrics, split by AI agent, AI-assisted and human authorship.
+author: langell
+branding:
+  icon: activity
+  color: blue
+
+inputs:
+  command:
+    description: "run (collect + report) or label (classify the current PR and apply an ai:* label)"
+    default: run
+  github-token:
+    description: Token for the GitHub API. Needs read access to pull requests and issues (and write for `label`).
+    default: ${{ github.token }}
+  path:
+    description: Path to the checked-out repository. Check out with fetch-depth 0.
+    default: .
+  output-dir:
+    description: Where to write index.html, metrics.json and summary.md.
+    default: agent-dora-report
+  since-days:
+    description: How many days of merged PRs to include (default 180).
+    default: ""
+  window-days:
+    description: Durability window in days (default 21).
+    default: ""
+  threshold:
+    description: Share of added lines that must survive the window, 0-1 (default 0.7).
+    default: ""
+  pr:
+    description: PR number for `label`. Defaults to the triggering pull request.
+    default: ${{ github.event.pull_request.number }}
+
+outputs:
+  report-dir:
+    description: Absolute path of the generated report.
+    value: ${{ steps.run.outputs.report-dir }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Build agent-dora
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        if [ ! -f dist/src/cli.js ]; then
+          npm ci --no-audit --no-fund --loglevel=error
+          npm run build
+        fi
+
+    - name: Restore durability cache
+      if: inputs.command == 'run'
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.path }}/.agent-dora
+        key: agent-dora-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: agent-dora-${{ runner.os }}-
+
+    - name: Run agent-dora
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        AD_COMMAND: ${{ inputs.command }}
+        AD_PATH: ${{ inputs.path }}
+        AD_OUT: ${{ inputs.output-dir }}
+        AD_SINCE: ${{ inputs.since-days }}
+        AD_WINDOW: ${{ inputs.window-days }}
+        AD_THRESHOLD: ${{ inputs.threshold }}
+        AD_PR: ${{ inputs.pr }}
+        AD_REPO: ${{ github.repository }}
+      run: |
+        args=("$AD_COMMAND" --repo "$AD_REPO" --path "$AD_PATH")
+        [ -n "$AD_SINCE" ] && args+=(--since "$AD_SINCE")
+        [ -n "$AD_WINDOW" ] && args+=(--window "$AD_WINDOW")
+        [ -n "$AD_THRESHOLD" ] && args+=(--threshold "$AD_THRESHOLD")
+        if [ "$AD_COMMAND" = "label" ]; then
+          args+=(--pr "$AD_PR")
+        else
+          args+=(--out "$AD_OUT")
+        fi
+        node "$GITHUB_ACTION_PATH/dist/src/cli.js" "${args[@]}"
+        if [ "$AD_COMMAND" = "run" ]; then
+          cat "$AD_OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "report-dir=$(cd "$AD_OUT" && pwd)" >> "$GITHUB_OUTPUT"
+        fi

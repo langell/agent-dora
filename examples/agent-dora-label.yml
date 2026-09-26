@@ -1,0 +1,23 @@
+# Labels every PR ai:agent, ai:assisted or ai:none as it's opened or updated.
+# Uses pull_request_target so fork PRs can be labelled too. This is safe here because
+# the workflow never checks out or runs code from the PR itself.
+name: agent-dora label
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # the base branch, for .agent-dora.json
+
+      - uses: langell/agent-dora@v0
+        with:
+          command: label
