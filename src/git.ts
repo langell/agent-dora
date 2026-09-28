@@ -172,8 +172,18 @@ export async function revertCommits(repoPath: string, ref: string, since: Date):
   }));
 }
 
-export async function expandOid(repoPath: string, short: string): Promise<string | null> {
+async function expandOid(repoPath: string, short: string): Promise<string | null> {
   return (await tryGit(repoPath, ['rev-parse', '--verify', '--quiet', `${short}^{commit}`]))?.trim() || null;
+}
+
+/**
+ * Resolves abbreviated SHAs up front and returns a lookup from short to full SHA.
+ * Unknown SHAs map to themselves, so they simply match nothing.
+ */
+export async function expandOids(repoPath: string, shorts: Iterable<string>): Promise<(short: string) => string> {
+  const full = new Map<string, string>();
+  for (const s of new Set(shorts)) full.set(s, (await expandOid(repoPath, s)) ?? s);
+  return (s) => full.get(s) ?? s;
 }
 
 export interface BranchCommit {

@@ -3,13 +3,11 @@ import { commitChanges, directCommitCount } from './commits.js';
 import type { Config } from './config.js';
 import { isoDate, MS_PER_DAY, Unit, UnitSetting } from './constants.js';
 import type { Store } from './db.js';
-import { measureDurability } from './durability.js';
 import * as g from './git.js';
 import type { GitHub } from './github.js';
-import { buildPrRecord } from './metrics.js';
-import { findRework } from './rework.js';
-import type { ChangeRecord, OpenPrRecord, Snapshot } from './types.js';
-import { progress } from './util.js';
+import type { ModeOptions } from './modes.js';
+import { prChanges } from './prs.js';
+import type { OpenPrRecord, Snapshot } from './types.js';
 
 export interface CollectOptions {
   repoPath: string;
@@ -58,27 +56,9 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
   if (unit === Unit.Commits) notes.push('Commit mode: review time is not available, and lead time is first commit to landing on the branch.');
   for (const n of notes) log(`Note: ${n}`);
 
-  const cache = store.durabilityCache();
-  let changes: ChangeRecord[];
-  if (unit === Unit.Commits) {
-    changes = await commitChanges({ repoPath, ref, repo, since, cfg, now, bugIssues: bugs, cache, log });
-  } else {
-    const reverts = await g.revertCommits(repoPath, ref, since);
-    const oidCache = new Map<string, string>();
-    for (const short of reverts.flatMap((r) => r.reverts)) {
-      oidCache.set(short, (await g.expandOid(repoPath, short)) ?? short);
-    }
-    const rework = findRework(merged, bugs, reverts, (s) => oidCache.get(s) ?? s, cfg);
-
-    log(`Measuring durability of ${merged.length} PRs against ${ref}...`);
-    changes = [];
-    const tick = progress(log, merged.length);
-    for (const pr of merged) {
-      const durability = await measureDurability(repoPath, ref, { ...pr, mergedAt: pr.mergedAt! }, cfg, now, cache);
-      changes.push(buildPrRecord(pr, classify(pr, cfg), rework.filter((e) => e.target === pr.number), durability, cfg));
-      tick();
-    }
-  }
+  const mode: ModeOptions = { repoPath, ref, repo, since, cfg, now, bugIssues: bugs, cache: store.durabilityCache(), log };
+  // Commit mode reuses the branch history already read to choose the unit.
+  const changes = unit === Unit.Commits ? await commitChanges(branchCommits, mode) : await prChanges(merged, mode);
 
   const openPrs: OpenPrRecord[] = open.map((pr) => ({
     number: pr.number,
