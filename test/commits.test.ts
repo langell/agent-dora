@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chooseUnit } from '../src/collect.js';
 import { commitChanges, directCommitCount } from '../src/commits.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
+import { firstParentCommits } from '../src/git.js';
 import { Store } from '../src/db.js';
 import { DAY, lines, T0, TempRepo } from './helpers.js';
 
@@ -42,7 +43,8 @@ test('commit mode: direct commits, a branch merge, reverts and Caused-by', async
   r.commit(T0 + 7 * DAY, `Fix f\n\nCaused-by: ${buggy.slice(0, 8)}`);
 
   const now = new Date(T0 + 40 * DAY);
-  const changes = await commitChanges({ repoPath: r.dir, ref: 'main', repo: 'o/r', since: new Date(T0 - DAY), cfg, now, bugIssues: [] });
+  const since = new Date(T0 - DAY);
+  const changes = await commitChanges(await firstParentCommits(r.dir, 'main', since), { repoPath: r.dir, ref: 'main', repo: 'o/r', since, cfg, now, bugIssues: [] });
   const byId = new Map(changes.map((c) => [c.id, c]));
 
   assert.equal(changes.length, 7); // initial, b, c, merge, f, revert, fix
