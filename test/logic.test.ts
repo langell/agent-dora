@@ -4,7 +4,8 @@ import { classify, isIgnoredAuthor } from '../src/classify.js';
 import { DEFAULT_CONFIG, fileMatcher, globToRegExp } from '../src/config.js';
 import { ClassSource, UnavailableReason } from '../src/constants.js';
 import { aggregate, buildPrRecord, isDurable, median } from '../src/metrics.js';
-import { renderHtml, renderMarkdown } from '../src/report.js';
+import { renderHtml } from '../src/report-html.js';
+import { renderMarkdown } from '../src/report.js';
 import { findRework } from '../src/rework.js';
 import type { RawPr, Snapshot } from '../src/types.js';
 

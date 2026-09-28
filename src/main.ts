@@ -20,7 +20,8 @@ import { Store } from './db.js';
 import { remoteRepo } from './git.js';
 import { GitHub, resolveToken } from './github.js';
 import { aggregate } from './metrics.js';
-import { nouns, renderHtml, renderMarkdown } from './report.js';
+import { renderHtml } from './report-html.js';
+import { nouns, renderMarkdown } from './report.js';
 
 const unitChoices = Object.values(UnitSetting).join('|');
 
