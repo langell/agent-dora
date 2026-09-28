@@ -55,6 +55,9 @@ const PR_FIELDS = `
   reviews(first:${MAX_PR_REVIEWS}){nodes{submittedAt author{login}}}
 `;
 
+/** A page of a GraphQL connection. */
+type Connection<N> = { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: N[] };
+
 type PrNode = {
   number: number; title: string; body: string; url: string; createdAt: string; mergedAt: string | null;
   isDraft: boolean; headRefName: string; baseRefName: string; additions: number; deletions: number;
@@ -155,24 +158,9 @@ export class GitHub {
         }
       }
     }`;
-    const out: RawPr[] = [];
-    let cursor: string | null = null;
-    for (;;) {
-      const data: { repository: { pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: PrNode[] } } } =
-        await this.graphql(query, { owner: this.owner, name: this.name, cursor, states: [state] });
-      const page = data.repository.pullRequests;
-      let reachedSince = false;
-      for (const n of page.nodes) {
-        if (Date.parse(n.createdAt) < since.getTime()) {
-          reachedSince = true;
-          break;
-        }
-        out.push(toRawPr(n));
-      }
-      onPage?.(out.length);
-      if (reachedSince || !page.pageInfo.hasNextPage) return out;
-      cursor = page.pageInfo.endCursor;
-    }
+    type Data = { repository: { pullRequests: Connection<PrNode> } };
+    const nodes = await this.newestSince<Data, PrNode>(query, { states: [state] }, (d) => d.repository.pullRequests, since, onPage);
+    return nodes.map(toRawPr);
   }
 
   /** Issues with any of `labels`, created on or after `since`. */
@@ -186,18 +174,42 @@ export class GitHub {
         }
       }
     }`;
-    const out: RawIssue[] = [];
+    type Data = { repository: { issues: Connection<RawIssue> } };
+    const nodes = await this.newestSince<Data, RawIssue>(query, { labels }, (d) => d.repository.issues, since);
+    return nodes.map((n) => ({ ...n, body: n.body ?? '' }));
+  }
+
+  /**
+   * Pages through a GraphQL connection ordered newest first (the query must take
+   * `$owner`, `$name` and `$cursor`), stopping at the first node created before `since`.
+   */
+  private async newestSince<T, N extends { createdAt: string }>(
+    query: string,
+    variables: Record<string, unknown>,
+    connection: (data: T) => Connection<N>,
+    since: Date,
+    onPage?: (n: number) => void,
+  ): Promise<N[]> {
+    const out: N[] = [];
     let cursor: string | null = null;
     for (;;) {
-      const data: { repository: { issues: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: RawIssue[] } } } =
-        await this.graphql(query, { owner: this.owner, name: this.name, cursor, labels });
-      const page = data.repository.issues;
-      for (const n of page.nodes) {
-        if (Date.parse(n.createdAt) < since.getTime()) return out;
-        out.push({ ...n, body: n.body ?? '' });
-      }
-      if (!page.pageInfo.hasNextPage) return out;
+      const page = connection(await this.graphql<T>(query, { owner: this.owner, name: this.name, cursor, ...variables }));
+      const older = page.nodes.findIndex((n) => Date.parse(n.createdAt) < since.getTime());
+      out.push(...(older === -1 ? page.nodes : page.nodes.slice(0, older)));
+      onPage?.(out.length);
+      if (older !== -1 || !page.pageInfo.hasNextPage) return out;
       cursor = page.pageInfo.endCursor;
+    }
+  }
+
+  /** Every page of a paginated REST list, one array per page. */
+  private async *restPages<T>(path: string): AsyncGenerator<T[]> {
+    for (let page = 1; ; page++) {
+      const res = await fetch(`${this.restBase}${path}?per_page=${REST_PAGE_SIZE}&page=${page}`, { headers: this.restHeaders });
+      if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+      const items = (await res.json()) as T[];
+      yield items;
+      if (items.length < REST_PAGE_SIZE) return;
     }
   }
 
@@ -212,16 +224,14 @@ export class GitHub {
 
   /** Login of whoever most recently applied `label` to an issue or PR, if anyone. */
   async labelActor(number: number, label: string): Promise<string | null> {
+    type IssueEvent = { event: string; label?: { name: string }; actor?: { login: string } | null };
     let actor: string | null = null;
-    for (let page = 1; ; page++) {
-      const res = await fetch(`${this.restBase}/issues/${number}/events?per_page=${REST_PAGE_SIZE}&page=${page}`, { headers: this.restHeaders });
-      if (!res.ok) throw new Error(`Reading events of #${number} failed: ${res.status}`);
-      const events = (await res.json()) as { event: string; label?: { name: string }; actor?: { login: string } | null }[];
+    for await (const events of this.restPages<IssueEvent>(`/issues/${number}/events`)) {
       for (const e of events) {
         if (e.event === EVENT_LABELED && e.label?.name === label) actor = e.actor?.login ?? null;
       }
-      if (events.length < REST_PAGE_SIZE) return actor;
     }
+    return actor;
   }
 
   /** Replaces any existing label from `family` with `label` on an issue or PR. */
