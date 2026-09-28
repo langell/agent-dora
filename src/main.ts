@@ -98,26 +98,14 @@ export async function main(argv: string[]): Promise<void> {
 
   switch (command) {
     case Command.Run:
-    case Command.Collect: {
-      const store = new Store(dbPath);
-      try {
+    case Command.Collect:
+      return withStore(dbPath, async (store) => {
         const snap = await collect({ repoPath, gh: await github(), cfg, store, log });
         log(`Collected ${snap.changes.length} ${nouns(snap.unit).plural} on ${snap.branch}, and ${snap.openPrs.length} open PRs.`);
         if (command === Command.Run) writeReport(store, snap.repo, resolve(values.out!), log);
-      } finally {
-        store.close();
-      }
-      return;
-    }
-    case Command.Report: {
-      const store = new Store(dbPath);
-      try {
-        writeReport(store, values.repo, resolve(values.out!), log);
-      } finally {
-        store.close();
-      }
-      return;
-    }
+      });
+    case Command.Report:
+      return withStore(dbPath, (store) => writeReport(store, values.repo, resolve(values.out!), log));
     case Command.Classify:
     case Command.Label: {
       const number = Number(values.pr);
@@ -141,6 +129,16 @@ export async function main(argv: string[]): Promise<void> {
     }
     default:
       throw new Error(`Unknown command "${command}". Run ${TOOL_NAME} --help.`);
+  }
+}
+
+/** Opens the cache, runs `fn`, and always closes it. */
+async function withStore<T>(dbPath: string, fn: (store: Store) => T | Promise<T>): Promise<T> {
+  const store = new Store(dbPath);
+  try {
+    return await fn(store);
+  } finally {
+    store.close();
   }
 }
 
