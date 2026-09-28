@@ -15,6 +15,25 @@ const issueSource = (number: number) => `issue ${prId(number)}`;
 
 const refs = (text: string, re: RegExp) => [...text.matchAll(re)].map((m) => Number(m[1]));
 
+/** The text of an issue that may reference the change that caused it. */
+const issueText = (issue: RawIssue) => `${issue.title}\n${issue.body}`;
+
+/**
+ * Accumulates rework events. Drops fixes dated before the change they fix
+ * landed, and keeps one event per (target, kind, source).
+ */
+function reworkLog() {
+  const events = new Map<string, ReworkEvent>();
+  return {
+    add(target: ReworkEvent['target'], landedAt: string, kind: ReworkEvent['kind'], at: string, source: string) {
+      if (Date.parse(at) < Date.parse(landedAt)) return;
+      const key = `${target}:${kind}:${source}`;
+      if (!events.has(key)) events.set(key, { target, kind, at, source });
+    },
+    events: () => [...events.values()],
+  };
+}
+
 /**
  * Finds evidence that a merged PR needed fixing after it shipped:
  * - revert: a git revert of its commits, GitHub's "Revert" button, or a `Revert "<title>"` PR;
@@ -37,13 +56,11 @@ export function findRework(
   const byTitle = new Map(merged.map((p) => [p.title, p.number]));
   const reworkLabels = new Set(cfg.labels.rework.map((l) => l.toLowerCase()));
 
-  const events = new Map<string, ReworkEvent>();
+  const log = reworkLog();
   const add = (target: number, kind: ReworkEvent['kind'], at: string, source: string) => {
     const t = byNumber.get(target);
-    // Only count fixes that happened after the target merged, and never self-references.
-    if (!t?.mergedAt || source === prId(target) || Date.parse(at) < Date.parse(t.mergedAt)) return;
-    const key = `${target}:${kind}:${source}`;
-    if (!events.has(key)) events.set(key, { target, kind, at, source });
+    // A PR never counts as fixing itself.
+    if (t?.mergedAt && source !== prId(target)) log.add(target, t.mergedAt, kind, at, source);
   };
 
   for (const r of reverts) {
@@ -68,10 +85,10 @@ export function findRework(
   }
 
   for (const issue of bugIssues) {
-    for (const n of refs(`${issue.title}\n${issue.body}`, CAUSED_BY)) add(n, ReworkKind.Bug, issue.createdAt, issueSource(issue.number));
+    for (const n of refs(issueText(issue), CAUSED_BY)) add(n, ReworkKind.Bug, issue.createdAt, issueSource(issue.number));
   }
 
-  return [...events.values()];
+  return log.events();
 }
 
 export interface CommitChange {
@@ -82,15 +99,15 @@ export interface CommitChange {
   owners: Set<string>;
 }
 
-/**
- * Commit-mode rework: git reverts of any commit a change carries, and
- * `Caused-by: <sha>` in later commit messages or in bug issues.
- */
 /** Short SHAs referenced by `Caused-by: <sha>` in the given texts, for resolving up front. */
 export function causedByShas(texts: string[]): string[] {
   return texts.flatMap((t) => [...t.matchAll(CAUSED_BY_SHA)].map((m) => m[1]!));
 }
 
+/**
+ * Commit-mode rework: git reverts of any commit a change carries, and
+ * `Caused-by: <sha>` in later commit messages or in bug issues.
+ */
 export function findCommitRework(
   changes: CommitChange[],
   bugIssues: RawIssue[],
@@ -100,12 +117,11 @@ export function findCommitRework(
   const byOwner = new Map<string, CommitChange>();
   for (const c of changes) for (const o of c.owners) byOwner.set(o, c);
 
-  const events = new Map<string, ReworkEvent>();
+  const log = reworkLog();
   const add = (short: string, kind: ReworkEvent['kind'], at: string, source: string, sourceOid?: string) => {
     const t = byOwner.get(resolveOid(short));
-    if (!t || (sourceOid && t.owners.has(sourceOid)) || Date.parse(at) < Date.parse(t.committedAt)) return;
-    const key = `${t.oid}:${kind}:${source}`;
-    if (!events.has(key)) events.set(key, { target: t.oid, kind, at, source });
+    // A change never counts as fixing itself, including via a commit it merged.
+    if (t && !(sourceOid && t.owners.has(sourceOid))) log.add(t.oid, t.committedAt, kind, at, source);
   };
 
   for (const r of reverts) for (const short of r.reverts) add(short, ReworkKind.Revert, r.at, shortSha(r.oid), r.oid);
@@ -113,7 +129,7 @@ export function findCommitRework(
     for (const m of c.message.matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, c.committedAt, shortSha(c.oid), c.oid);
   }
   for (const issue of bugIssues) {
-    for (const m of `${issue.title}\n${issue.body}`.matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, issue.createdAt, issueSource(issue.number));
+    for (const m of issueText(issue).matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, issue.createdAt, issueSource(issue.number));
   }
-  return [...events.values()];
+  return log.events();
 }

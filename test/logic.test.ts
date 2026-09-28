@@ -218,3 +218,23 @@ test('classStats on an empty class is empty, not zero', async () => {
   assert.equal(s.merged, 0);
   for (const k of ['durableRate', 'durablePerWeek', 'churn', 'changeFailureRate', 'leadTimeP50Hours', 'sizeP50'] as const) assert.equal(s[k], null, k);
 });
+
+test('findCommitRework: attributes to the carrying change, skips self-fixes, early fixes and duplicates', async () => {
+  const { findCommitRework } = await import('../src/rework.js');
+  const change = (oid: string, committedAt: string, message: string, owners: string[] = []) =>
+    ({ oid, committedAt, message, owners: new Set([oid, ...owners]) });
+  const merge = change('m1', '2026-01-10T00:00:00Z', 'Merge feature', ['f1', 'f2']);
+  const later = change('c2', '2026-01-12T00:00:00Z', 'Fix it\n\nCaused-by: f2abcde');
+  const selfRef = change('c3', '2026-01-13T00:00:00Z', 'Tidy\n\nCaused-by: c3');
+  const reverts = [
+    { oid: 'r1', at: '2026-01-11T00:00:00Z', subject: 'Revert', reverts: ['f1'] },
+    { oid: 'r1', at: '2026-01-11T00:00:00Z', subject: 'Revert', reverts: ['f1'] }, // duplicate
+    { oid: 'r0', at: '2026-01-09T00:00:00Z', subject: 'Revert', reverts: ['f2'] }, // before m1 landed
+  ];
+  const full = (s: string) => (s === 'f2abcde' ? 'f2' : s);
+  const events = findCommitRework([merge, later, selfRef], [], reverts, full);
+  assert.deepEqual(
+    events.map((e) => `${e.target}:${e.kind}:${e.source}`).sort(),
+    ['m1:bug:c2', 'm1:revert:r1'],
+  );
+});
