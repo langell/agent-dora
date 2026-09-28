@@ -170,3 +170,11 @@ test('report wording follows the unit', () => {
   assert.doesNotMatch(md, /Time to first review/);
   assert.match(md, /> Most changes bypass pull requests/);
 });
+
+test('progress logs every PROGRESS_EVERY items', async () => {
+  const { progress, PROGRESS_EVERY } = await import('../src/util.js');
+  const lines: string[] = [];
+  const tick = progress((m) => lines.push(m), PROGRESS_EVERY * 2 + 3);
+  for (let i = 0; i < PROGRESS_EVERY * 2 + 3; i++) tick();
+  assert.deepEqual(lines, [`  ${PROGRESS_EVERY}/${PROGRESS_EVERY * 2 + 3}`, `  ${PROGRESS_EVERY * 2}/${PROGRESS_EVERY * 2 + 3}`]);
+});

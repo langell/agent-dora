@@ -9,6 +9,7 @@ import type { GitHub } from './github.js';
 import { buildPrRecord } from './metrics.js';
 import { findRework } from './rework.js';
 import type { ChangeRecord, OpenPrRecord, Snapshot } from './types.js';
+import { progress } from './util.js';
 
 export interface CollectOptions {
   repoPath: string;
@@ -71,10 +72,11 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
 
     log(`Measuring durability of ${merged.length} PRs against ${ref}...`);
     changes = [];
-    for (const [i, pr] of merged.entries()) {
+    const tick = progress(log, merged.length);
+    for (const pr of merged) {
       const durability = await measureDurability(repoPath, ref, { ...pr, mergedAt: pr.mergedAt! }, cfg, now, cache);
       changes.push(buildPrRecord(pr, classify(pr, cfg), rework.filter((e) => e.target === pr.number), durability, cfg));
-      if ((i + 1) % 25 === 0) log(`  ${i + 1}/${merged.length}`);
+      tick();
     }
   }
 
