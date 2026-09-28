@@ -6,6 +6,7 @@ import * as g from './git.js';
 import { isDurable } from './metrics.js';
 import { causedByShas, findCommitRework } from './rework.js';
 import type { ChangeRecord, RawIssue } from './types.js';
+import { progress } from './util.js';
 
 export interface CommitModeOptions {
   repoPath: string;
@@ -49,7 +50,8 @@ export async function commitChanges({ repoPath, ref, repo, since, cfg, now, bugI
 
   log(`Measuring durability of ${units.length} commits against ${ref}...`);
   const out: ChangeRecord[] = [];
-  for (const [i, { c, merged }] of units.entries()) {
+  const tick = progress(log, units.length);
+  for (const { c, merged } of units) {
     const cls = classify(
       { author: c.authorName, labels: [], headRefName: '', body: '', commits: [{ message: c.message }, ...merged] },
       cfg,
@@ -78,7 +80,7 @@ export async function commitChanges({ repoPath, ref, repo, since, cfg, now, bugI
       durability,
       durable: isDurable(c.committedAt, events, durability, cfg),
     });
-    if ((i + 1) % 25 === 0) log(`  ${i + 1}/${units.length}`);
+    tick();
   }
   return out;
 }
