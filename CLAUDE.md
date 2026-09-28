@@ -19,9 +19,10 @@ All new work happens on a branch, never directly on `main`:
 ## Layout
 - `src/constants.ts`: every shared value (see below)
 - `src/collect.ts` picks the unit, then `prs.ts` or `commits.ts` (same `ModeOptions`) builds change records
-  using `durability.ts` and `rework.ts`; `metrics.ts` aggregates; `report.ts` renders
-- `src/report.ts` renders markdown and a self-contained HTML dashboard; its browser script gets
-  everything it shares with the server through the embedded `ui` payload
+  using `durability.ts` and `rework.ts`; `metrics.ts` aggregates
+- Reports: `report.ts` (formatting, wording, markdown), `report-html.ts` (the dashboard page),
+  `report-theme.ts` (design tokens, stylesheet), `report-client.ts` (the browser script, which gets
+  everything it shares with the server through the embedded `ui` payload)
 
 ## No magic strings
 Never write a bare string or number literal whose meaning is shared, compared against, or would need
@@ -38,8 +39,9 @@ to change in more than one place. Name it once and reference the name.
   and the `MS_PER_*` time constants. No `slice(0, 10)`, `86_400_000` or `` `#${n}` ``.
 - **Module-local values** used only inside one file (API page sizes, git format codes, chart geometry)
   are named `const`s at the top of that file.
-- **HTML ids and wording shared by markup and the client script** come from `report.ts` (`Ids`,
-  `nouns()`, `STATUS_STYLE`) and reach the browser through the `ui` payload. Don't retype them in `CLIENT_JS`.
+- **HTML ids and wording shared by markup and the client script** come from `report-html.ts` (`Ids`,
+  `STATUS_STYLE`) and `report.ts` (`nouns()`), and reach the browser through the `ui` payload.
+  Don't retype them in `report-client.ts`.
 
 Fine as literals: user-facing prose (log lines, errors, help text), CSS, regexes held in a named
 constant, config defaults defined once in `DEFAULT_CONFIG`, and expected values in tests (tests
