@@ -1,6 +1,6 @@
-export type AuthorClass = 'agent' | 'assisted' | 'human';
-export const AUTHOR_CLASSES: readonly AuthorClass[] = ['agent', 'assisted', 'human'];
-export type ClassKey = AuthorClass | 'all';
+import type { AuthorClass, ChangeKind, ClassSource, DurabilityStatus, ReworkKind, UnavailableReason, Unit } from './constants.js';
+
+export type { AuthorClass, ClassKey, ReworkKind, Unit } from './constants.js';
 
 export interface PrCommit {
   oid: string;
@@ -41,8 +41,6 @@ export interface RawIssue {
   createdAt: string;
 }
 
-export type ReworkKind = 'revert' | 'rework' | 'bug';
-
 /** Evidence that a change needed fixing after it shipped. */
 export interface ReworkEvent {
   /** PR number or full commit SHA of the change that needed fixing. */
@@ -53,19 +51,16 @@ export interface ReworkEvent {
 }
 
 export interface Durability {
-  status: 'measured' | 'pending' | 'unavailable';
+  status: DurabilityStatus;
   /** Lines the PR added, as attributed by `git blame` at the merge commit. */
   baseline: number;
   /** Of those lines, how many are still attributed to the PR at merge + window. */
   surviving: number;
-  reason?: string;
+  reason?: UnavailableReason;
 }
 
-/** What counts as one change: a merged pull request, or a commit on the branch. */
-export type Unit = 'prs' | 'commits';
-
 export interface ChangeRecord {
-  kind: 'pr' | 'commit';
+  kind: ChangeKind;
   /** Display id: "#123" for a PR, a short SHA for a commit. */
   id: string;
   /** PR number; null for commits. */
@@ -74,6 +69,7 @@ export interface ChangeRecord {
   url: string;
   author: string | null;
   authorClass: AuthorClass;
+  classSource: ClassSource;
   classReason: string;
   createdAt: string;
   mergedAt: string;

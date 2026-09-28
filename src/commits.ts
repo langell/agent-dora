@@ -1,12 +1,11 @@
 import { classify, isIgnoredAuthor } from './classify.js';
 import type { Config } from './config.js';
+import { ChangeKind, githubCommitUrl, MS_PER_HOUR, shortSha } from './constants.js';
 import { measureDurability, type DurabilityCache } from './durability.js';
 import * as g from './git.js';
 import { isDurable } from './metrics.js';
 import { causedByShas, findCommitRework } from './rework.js';
 import type { ChangeRecord, RawIssue } from './types.js';
-
-const HOUR = 3_600_000;
 
 export interface CommitModeOptions {
   repoPath: string;
@@ -51,7 +50,7 @@ export async function commitChanges({ repoPath, ref, repo, since, cfg, now, bugI
   log(`Measuring durability of ${units.length} commits against ${ref}...`);
   const out: ChangeRecord[] = [];
   for (const [i, { c, merged }] of units.entries()) {
-    const { authorClass, reason } = classify(
+    const cls = classify(
       { author: c.authorName, labels: [], headRefName: '', body: '', commits: [{ message: c.message }, ...merged] },
       cfg,
     );
@@ -59,19 +58,20 @@ export async function commitChanges({ repoPath, ref, repo, since, cfg, now, bugI
     const firstCommit = Math.min(Date.parse(c.authoredAt), ...merged.map((m) => Date.parse(m.authoredAt)));
     const events = rework.filter((e) => e.target === c.oid);
     out.push({
-      kind: 'commit',
-      id: c.oid.slice(0, 7),
+      kind: ChangeKind.Commit,
+      id: shortSha(c.oid),
       number: null,
-      title: c.message.split('\n')[0] ?? '',
-      url: `https://github.com/${repo}/commit/${c.oid}`,
+      title: g.subject(c.message),
+      url: githubCommitUrl(repo, c.oid),
       author: c.authorName || null,
-      authorClass,
-      classReason: reason,
+      authorClass: cls.authorClass,
+      classSource: cls.source,
+      classReason: cls.reason,
       createdAt: new Date(firstCommit).toISOString(),
       mergedAt: c.committedAt,
       firstCommitAt: new Date(firstCommit).toISOString(),
       firstReviewAt: null,
-      leadTimeHours: Math.max(0, (Date.parse(c.committedAt) - firstCommit) / HOUR),
+      leadTimeHours: Math.max(0, (Date.parse(c.committedAt) - firstCommit) / MS_PER_HOUR),
       reviewWaitHours: null,
       size: await g.diffSize(repoPath, c.parents[0] ?? g.EMPTY_TREE, c.oid),
       rework: events,
@@ -93,6 +93,6 @@ export function directCommitCount(
   prs: { mergeCommitOid: string | null; commits: { message: string }[] }[],
 ): number {
   const mergeOids = new Set(prs.flatMap((p) => (p.mergeCommitOid ? [p.mergeCommitOid] : [])));
-  const subjects = new Set(prs.flatMap((p) => p.commits.map((c) => c.message.split('\n')[0]!.trim())));
-  return branchCommits.filter((c) => !mergeOids.has(c.oid) && !subjects.has(c.message.split('\n')[0]!.trim())).length;
+  const subjects = new Set(prs.flatMap((p) => p.commits.map((c) => g.subject(c.message))));
+  return branchCommits.filter((c) => !mergeOids.has(c.oid) && !subjects.has(g.subject(c.message))).length;
 }

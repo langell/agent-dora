@@ -1,11 +1,21 @@
+import type { Classification } from './classify.js';
 import type { Config } from './config.js';
-import { AUTHOR_CLASSES, type AuthorClass, type ChangeRecord, type ClassKey, type Durability, type OpenPrRecord, type RawPr, type ReworkEvent, type Snapshot, type Unit } from './types.js';
-
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
-const WEEK = 7 * DAY;
-
-export const NO_MEASURABLE_LINES = 'no measurable added lines';
+import {
+  ALL_CLASSES,
+  CLASS_KEYS,
+  ChangeKind,
+  ChangeStatus,
+  DurabilityStatus,
+  ReworkKind,
+  MS_PER_DAY,
+  MS_PER_HOUR,
+  MS_PER_WEEK,
+  prId,
+  UnavailableReason,
+  isoDate,
+  type ClassKey,
+} from './constants.js';
+import type { ChangeRecord, Durability, OpenPrRecord, RawPr, ReworkEvent, Snapshot, Unit } from './types.js';
 
 export function median(xs: number[]): number | null {
   if (!xs.length) return null;
@@ -25,35 +35,43 @@ function firstReviewAt(pr: RawPr): string | null {
  * Returns null while that can't be known yet (or history is missing).
  */
 export function isDurable(mergedAt: string, rework: ReworkEvent[], d: Durability, cfg: Config): boolean | null {
-  if (d.status === 'pending') return null;
-  const due = Date.parse(mergedAt) + cfg.windowDays * DAY;
+  if (d.status === DurabilityStatus.Pending) return null;
+  const due = Date.parse(mergedAt) + cfg.windowDays * MS_PER_DAY;
   if (rework.some((e) => Date.parse(e.at) <= due)) return false;
-  if (d.status === 'measured') return d.surviving / d.baseline >= cfg.survivalThreshold;
+  if (d.status === DurabilityStatus.Measured) return d.surviving / d.baseline >= cfg.survivalThreshold;
   // Deletion-only or config/binary-only PRs have nothing to churn; judge them on rework alone.
-  return d.reason === NO_MEASURABLE_LINES ? true : null;
+  return d.reason === UnavailableReason.NoMeasurableLines ? true : null;
 }
 
-export function buildPrRecord(pr: RawPr, authorClass: AuthorClass, classReason: string, rework: ReworkEvent[], durability: Durability, cfg: Config): ChangeRecord {
+/** A change's standing, as shown and filtered in the report. */
+export function changeStatus(c: Pick<ChangeRecord, 'durable' | 'durability'>): ChangeStatus {
+  if (c.durable === true) return ChangeStatus.Durable;
+  if (c.durable === false) return ChangeStatus.Failed;
+  return c.durability.status === DurabilityStatus.Pending ? ChangeStatus.Pending : ChangeStatus.Unknown;
+}
+
+export function buildPrRecord(pr: RawPr, cls: Classification, rework: ReworkEvent[], durability: Durability, cfg: Config): ChangeRecord {
   const mergedAt = pr.mergedAt!;
   const commitTimes = pr.commits.map((c) => Date.parse(c.authoredDate)).filter(Number.isFinite);
   const firstCommit = commitTimes.length ? Math.min(...commitTimes) : null;
   const start = Math.min(firstCommit ?? Infinity, Date.parse(pr.createdAt));
   const review = firstReviewAt(pr);
   return {
-    kind: 'pr',
-    id: `#${pr.number}`,
+    kind: ChangeKind.Pr,
+    id: prId(pr.number),
     number: pr.number,
     title: pr.title,
     url: pr.url,
     author: pr.author,
-    authorClass,
-    classReason,
+    authorClass: cls.authorClass,
+    classSource: cls.source,
+    classReason: cls.reason,
     createdAt: pr.createdAt,
     mergedAt,
     firstCommitAt: firstCommit === null ? null : new Date(firstCommit).toISOString(),
     firstReviewAt: review,
-    leadTimeHours: (Date.parse(mergedAt) - start) / HOUR,
-    reviewWaitHours: review ? (Date.parse(review) - Date.parse(pr.createdAt)) / HOUR : null,
+    leadTimeHours: (Date.parse(mergedAt) - start) / MS_PER_HOUR,
+    reviewWaitHours: review ? (Date.parse(review) - Date.parse(pr.createdAt)) / MS_PER_HOUR : null,
     size: pr.additions + pr.deletions,
     rework,
     durability,
@@ -83,7 +101,7 @@ export interface ClassStats {
 
 export interface WeekRow {
   week: string;
-  /** Every PR merged this week has passed its durability window. */
+  /** Every change that landed this week has passed its durability window. */
   matured: boolean;
   merged: Record<ClassKey, number>;
   durable: Record<ClassKey, number>;
@@ -103,69 +121,75 @@ export interface Report {
   maturedWeeks: number;
   stats: Record<ClassKey, ClassStats>;
   weeks: WeekRow[];
-  changes: ChangeRecord[];
+  changes: ReportedChange[];
   openPrs: OpenPrRecord[];
 }
 
-const KEYS: ClassKey[] = [...AUTHOR_CLASSES, 'all'];
-const zeroes = (): Record<ClassKey, number> => ({ agent: 0, assisted: 0, human: 0, all: 0 });
+export type ReportedChange = ChangeRecord & { status: ChangeStatus };
+
+/** Per-week rates need at least this many matured weeks to mean anything. */
+const MIN_WEEKS_FOR_RATE = 1;
+
+const zeroes = () => Object.fromEntries(CLASS_KEYS.map((k) => [k, 0])) as Record<ClassKey, number>;
 
 export function startOfWeek(t: number): number {
   const d = new Date(t);
   d.setUTCHours(0, 0, 0, 0);
-  return d.getTime() - ((d.getUTCDay() + 6) % 7) * DAY; // Monday
+  const daysSinceMonday = (d.getUTCDay() + 6) % 7; // getUTCDay() is 0 on Sunday
+  return d.getTime() - daysSinceMonday * MS_PER_DAY;
 }
 
 export function aggregate(snap: Snapshot, now: Date = new Date(snap.collectedAt)): Report {
-  const windowMs = snap.windowDays * DAY;
+  const windowMs = snap.windowDays * MS_PER_DAY;
   const maturedUntil = now.getTime() - windowMs;
   // The period starts at the first change, so young repos aren't averaged over empty weeks.
   const firstChange = Math.min(...snap.changes.map((c) => Date.parse(c.mergedAt)));
   const periodStart = Math.max(Date.parse(snap.since), Number.isFinite(firstChange) ? firstChange : 0);
-  const maturedWeeks = Math.max(0, (maturedUntil - periodStart) / WEEK);
+  const maturedWeeks = Math.max(0, (maturedUntil - periodStart) / MS_PER_WEEK);
 
   const stats = {} as Record<ClassKey, ClassStats>;
-  for (const key of KEYS) {
-    const prs = snap.changes.filter((p) => key === 'all' || p.authorClass === key);
+  const inClass = (key: ClassKey) => (p: { authorClass: string }) => key === ALL_CLASSES || p.authorClass === key;
+  for (const key of CLASS_KEYS) {
+    const prs = snap.changes.filter(inClass(key));
     const matured = prs.filter((p) => p.durable !== null);
     const durable = matured.filter((p) => p.durable).length;
-    const measured = prs.filter((p) => p.durability.status === 'measured');
+    const measured = prs.filter((p) => p.durability.status === DurabilityStatus.Measured);
     const baseline = measured.reduce((s, p) => s + p.durability.baseline, 0);
     const surviving = measured.reduce((s, p) => s + p.durability.surviving, 0);
     const failed = matured.filter((p) => p.rework.some((e) => Date.parse(e.at) <= Date.parse(p.mergedAt) + windowMs)).length;
-    const open = snap.openPrs.filter((p) => key === 'all' || p.authorClass === key);
+    const open = snap.openPrs.filter(inClass(key));
     const waiting = open.filter((p) => p.awaitingFirstReview);
     stats[key] = {
       merged: prs.length,
       matured: matured.length,
       durable,
       durableRate: matured.length ? durable / matured.length : null,
-      durablePerWeek: maturedWeeks >= 1 && matured.length ? durable / maturedWeeks : null,
+      durablePerWeek: maturedWeeks >= MIN_WEEKS_FOR_RATE && matured.length ? durable / maturedWeeks : null,
       churn: baseline ? 1 - surviving / baseline : null,
       changeFailureRate: matured.length ? failed / matured.length : null,
-      reverts: prs.filter((p) => p.rework.some((e) => e.kind === 'revert')).length,
+      reverts: prs.filter((p) => p.rework.some((e) => e.kind === ReworkKind.Revert)).length,
       leadTimeP50Hours: median(prs.flatMap((p) => (p.leadTimeHours === null ? [] : [p.leadTimeHours]))),
       reviewWaitP50Hours: median(prs.flatMap((p) => (p.reviewWaitHours === null ? [] : [p.reviewWaitHours]))),
       sizeP50: median(prs.map((p) => p.size)),
       openPrs: open.length,
       awaitingReview: waiting.length,
-      awaitingReviewAgeP50Hours: median(waiting.map((p) => (now.getTime() - Date.parse(p.createdAt)) / HOUR)),
+      awaitingReviewAgeP50Hours: median(waiting.map((p) => (now.getTime() - Date.parse(p.createdAt)) / MS_PER_HOUR)),
     };
   }
 
   const weeks: WeekRow[] = [];
-  for (let w = startOfWeek(periodStart); w <= now.getTime(); w += WEEK) {
-    weeks.push({ week: new Date(w).toISOString().slice(0, 10), matured: w + WEEK <= maturedUntil, merged: zeroes(), durable: zeroes() });
+  for (let w = startOfWeek(periodStart); w <= now.getTime(); w += MS_PER_WEEK) {
+    weeks.push({ week: isoDate(new Date(w).toISOString()), matured: w + MS_PER_WEEK <= maturedUntil, merged: zeroes(), durable: zeroes() });
   }
   const first = weeks.length ? Date.parse(weeks[0]!.week) : 0;
   for (const p of snap.changes) {
-    const row = weeks[Math.floor((startOfWeek(Date.parse(p.mergedAt)) - first) / WEEK)];
+    const row = weeks[Math.floor((startOfWeek(Date.parse(p.mergedAt)) - first) / MS_PER_WEEK)];
     if (!row) continue;
     row.merged[p.authorClass]++;
-    row.merged.all++;
+    row.merged[ALL_CLASSES]++;
     if (p.durable) {
       row.durable[p.authorClass]++;
-      row.durable.all++;
+      row.durable[ALL_CLASSES]++;
     }
   }
 
@@ -183,7 +207,9 @@ export function aggregate(snap: Snapshot, now: Date = new Date(snap.collectedAt)
     maturedWeeks,
     stats,
     weeks,
-    changes: [...snap.changes].sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt)),
+    changes: [...snap.changes]
+      .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))
+      .map((c) => ({ ...c, status: changeStatus(c) })),
     openPrs: snap.openPrs,
   };
 }

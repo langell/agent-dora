@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import type { AuthorClass } from './types.js';
+import { AUTHOR_CLASSES, AuthorClass, BOT_SUFFIX, ClassSource } from './constants.js';
 
 export interface Classifiable {
   author: string | null;
@@ -11,10 +11,21 @@ export interface Classifiable {
 
 export interface Classification {
   authorClass: AuthorClass;
+  /** Which signal decided it; use this, not `reason`, to branch on. */
+  source: ClassSource;
+  /** Human-readable detail, e.g. which label or pattern matched. */
   reason: string;
 }
 
-const normLogin = (login: string) => login.toLowerCase().replace(/\[bot\]$/, '');
+/** Lowercased login without GitHub's bot suffix, so `claude[bot]` matches `claude`. */
+export function normLogin(login: string): string {
+  const lower = login.toLowerCase();
+  return lower.endsWith(BOT_SUFFIX) ? lower.slice(0, -BOT_SUFFIX.length) : lower;
+}
+
+export function isBotLogin(login: string): boolean {
+  return login.toLowerCase().endsWith(BOT_SUFFIX);
+}
 
 export function isIgnoredAuthor(author: string | null, cfg: Config): boolean {
   if (!author) return false;
@@ -31,31 +42,27 @@ export function isIgnoredAuthor(author: string | null, cfg: Config): boolean {
  */
 export function classify(pr: Classifiable, cfg: Config): Classification {
   const labels = new Set(pr.labels.map((l) => l.toLowerCase()));
-  for (const cls of ['agent', 'assisted', 'human'] as const) {
+  for (const cls of AUTHOR_CLASSES) {
     const hit = cfg.labels[cls].find((l) => labels.has(l.toLowerCase()));
-    if (hit) return { authorClass: cls, reason: `label ${hit}` };
+    if (hit) return { authorClass: cls, source: ClassSource.Label, reason: `label ${hit}` };
   }
 
   if (pr.author) {
     const a = normLogin(pr.author);
     if (cfg.agentAuthors.some((x) => normLogin(x) === a)) {
-      return { authorClass: 'agent', reason: `author ${pr.author}` };
+      return { authorClass: AuthorClass.Agent, source: ClassSource.Author, reason: `author ${pr.author}` };
     }
   }
   const prefix = cfg.agentBranchPrefixes.find((p) => pr.headRefName.startsWith(p));
-  if (prefix) return { authorClass: 'agent', reason: `branch ${prefix}*` };
+  if (prefix) return { authorClass: AuthorClass.Agent, source: ClassSource.Branch, reason: `branch ${prefix}*` };
 
   const patterns = cfg.assistedPatterns.map((p) => new RegExp(p, 'im'));
   const texts = [pr.body, ...pr.commits.map((c) => c.message)];
   for (const re of patterns) {
-    if (texts.some((t) => re.test(t))) return { authorClass: 'assisted', reason: `matched /${re.source}/` };
+    if (texts.some((t) => re.test(t))) {
+      return { authorClass: AuthorClass.Assisted, source: ClassSource.Trailer, reason: `matched /${re.source}/` };
+    }
   }
 
-  return { authorClass: 'human', reason: 'no AI signal' };
+  return { authorClass: AuthorClass.Human, source: ClassSource.None, reason: 'no AI signal' };
 }
-
-export const CLASS_LABELS: Record<AuthorClass, string> = {
-  agent: 'ai:agent',
-  assisted: 'ai:assisted',
-  human: 'ai:none',
-};

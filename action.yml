@@ -93,8 +93,5 @@ runs:
         else
           args+=(--out "$AD_OUT")
         fi
+        # The CLI writes the job summary and the report-dir output itself.
         node "$GITHUB_ACTION_PATH/dist/src/cli.js" "${args[@]}"
-        if [ "$AD_COMMAND" = "run" ]; then
-          cat "$AD_OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          echo "report-dir=$(cd "$AD_OUT" && pwd)" >> "$GITHUB_OUTPUT"
-        fi

@@ -1,12 +1,22 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { AuthorClass, CONFIG_FILE, UnitSetting } from './constants.js';
+
+export { CONFIG_FILE } from './constants.js';
+
+/** The label applied to a PR of each author class, unless configured otherwise. */
+export const CLASS_LABELS: Record<AuthorClass, string> = {
+  [AuthorClass.Agent]: 'ai:agent',
+  [AuthorClass.Assisted]: 'ai:assisted',
+  [AuthorClass.Human]: 'ai:none',
+};
 
 export interface Config {
   /**
    * What counts as one change. `prs`: merged pull requests. `commits`: each commit on the
    * branch. `auto`: commits when most changes on the branch bypass pull requests.
    */
-  unit: 'auto' | 'prs' | 'commits';
+  unit: UnitSetting;
   /** Branch to measure. Defaults to the repository's default branch. */
   branch?: string;
   /** How long a change must survive before it counts as durable. */
@@ -15,10 +25,8 @@ export interface Config {
   survivalThreshold: number;
   /** How far back to collect merged PRs. */
   sinceDays: number;
-  labels: {
-    agent: string[];
-    assisted: string[];
-    human: string[];
+  /** Labels that mark a PR's author class (the first is the one `label` applies), plus: */
+  labels: Record<AuthorClass, string[]> & {
     /** Labels on a PR that fixes an earlier PR (it must reference that PR as #N). */
     rework: string[];
     /** Labels on issues that may carry a `Caused-by: #N` reference. */
@@ -37,14 +45,14 @@ export interface Config {
 }
 
 export const DEFAULT_CONFIG: Config = {
-  unit: 'auto',
+  unit: UnitSetting.Auto,
   windowDays: 21,
   survivalThreshold: 0.7,
   sinceDays: 180,
   labels: {
-    agent: ['ai:agent'],
-    assisted: ['ai:assisted'],
-    human: ['ai:none'],
+    [AuthorClass.Agent]: [CLASS_LABELS[AuthorClass.Agent]],
+    [AuthorClass.Assisted]: [CLASS_LABELS[AuthorClass.Assisted]],
+    [AuthorClass.Human]: [CLASS_LABELS[AuthorClass.Human]],
     rework: ['rework', 'hotfix', 'regression'],
     bug: ['bug'],
   },
@@ -87,8 +95,6 @@ export const DEFAULT_CONFIG: Config = {
   ],
 };
 
-export const CONFIG_FILE = '.agent-dora.json';
-
 /**
  * Loads `.agent-dora.json` from the repo, if present, over the defaults.
  * Arrays replace the default arrays; `labels` merges key by key.
@@ -112,8 +118,9 @@ export function loadConfig(repoPath: string, overrides: Partial<Config> = {}): C
   if (!(merged.survivalThreshold > 0 && merged.survivalThreshold <= 1)) {
     throw new Error(`survivalThreshold must be in (0, 1], got ${merged.survivalThreshold}`);
   }
-  if (!['auto', 'prs', 'commits'].includes(merged.unit)) {
-    throw new Error(`unit must be auto, prs or commits, got "${merged.unit}"`);
+  const units: readonly string[] = Object.values(UnitSetting);
+  if (!units.includes(merged.unit)) {
+    throw new Error(`unit must be one of ${units.join(', ')}, got "${merged.unit}"`);
   }
   if (!(merged.windowDays > 0)) throw new Error(`windowDays must be positive, got ${merged.windowDays}`);
   return merged;

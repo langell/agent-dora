@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { classify, isIgnoredAuthor } from '../src/classify.js';
 import { DEFAULT_CONFIG, fileMatcher, globToRegExp } from '../src/config.js';
+import { ClassSource, UnavailableReason } from '../src/constants.js';
 import { aggregate, buildPrRecord, isDurable, median } from '../src/metrics.js';
 import { renderHtml, renderMarkdown } from '../src/report.js';
 import { findRework } from '../src/rework.js';
@@ -29,8 +30,17 @@ test('classify: labels win, then agent author/branch, then assisted trailers', (
   assert.equal(classify(pr({ number: 5, body: '🤖 Generated with [Claude Code](https://claude.com/claude-code)' }), cfg).authorClass, 'assisted');
   assert.equal(classify(pr({ number: 6 }), cfg).authorClass, 'human');
   const labelled = classify(pr({ number: 7, author: 'Copilot', labels: ['AI:None'] }), cfg);
-  assert.deepEqual(labelled, { authorClass: 'human', reason: 'label ai:none' });
+  assert.deepEqual(labelled, { authorClass: 'human', source: 'label', reason: 'label ai:none' });
   assert.equal(classify(pr({ number: 8, commits: [{ oid: 'x', message: 'Co-authored-by: Bob <bob@x.com>', authoredDate: '' }] }), cfg).authorClass, 'human');
+});
+
+test('classify reports which signal decided', () => {
+  const src = (over: Partial<RawPr>) => classify(pr({ number: 1, ...over }), cfg).source;
+  assert.equal(src({ labels: ['ai:agent'] }), 'label');
+  assert.equal(src({ author: 'Copilot' }), 'author');
+  assert.equal(src({ headRefName: 'claude/x' }), 'branch');
+  assert.equal(src({ body: 'Generated with Claude Code' }), 'trailer');
+  assert.equal(src({}), 'none');
 });
 
 test('ignored authors', () => {
@@ -84,8 +94,8 @@ test('isDurable', () => {
   // Rework after the window doesn't retroactively fail the PR.
   assert.equal(isDurable(merged, [{ target: 1, kind: 'bug', at: '2026-03-01T00:00:00Z', source: 'x' }], measured(10, 10), cfg), true);
   assert.equal(isDurable(merged, [], { status: 'pending', baseline: 0, surviving: 0 }, cfg), null);
-  assert.equal(isDurable(merged, [], { status: 'unavailable', baseline: 0, surviving: 0, reason: 'no measurable added lines' }, cfg), true);
-  assert.equal(isDurable(merged, [], { status: 'unavailable', baseline: 0, surviving: 0, reason: 'merge commit not in local history' }, cfg), null);
+  assert.equal(isDurable(merged, [], { status: 'unavailable', baseline: 0, surviving: 0, reason: UnavailableReason.NoMeasurableLines }, cfg), true);
+  assert.equal(isDurable(merged, [], { status: 'unavailable', baseline: 0, surviving: 0, reason: UnavailableReason.NotInHistory }, cfg), null);
 });
 
 test('median', () => {
@@ -102,7 +112,7 @@ function snapshot(): Snapshot {
     const createdAt = new Date(now - daysAgo * DAY - 2 * DAY).toISOString();
     const raw = pr({ number: n, mergedAt, createdAt, commits: [{ oid: `c${n}`, message: 'x', authoredDate: createdAt }], reviews: [{ submittedAt: new Date(now - daysAgo * DAY - DAY).toISOString(), author: 'bob' }] });
     const d = daysAgo > 21 ? { status: 'measured' as const, baseline: 10, surviving } : { status: 'pending' as const, baseline: 0, surviving: 0 };
-    return buildPrRecord(raw, cls, 'test', [], d, cfg);
+    return buildPrRecord(raw, { authorClass: cls, source: ClassSource.None, reason: 'test' }, [], d, cfg);
   };
   return {
     repo: 'o/r', defaultBranch: 'main', branch: 'main', unit: 'prs', notes: [], collectedAt: new Date(now).toISOString(), since, windowDays: 21, survivalThreshold: 0.7,

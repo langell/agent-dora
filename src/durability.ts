@@ -1,6 +1,6 @@
 import { fileMatcher, type Config } from './config.js';
+import { DurabilityStatus, MS_PER_DAY, UnavailableReason } from './constants.js';
 import * as g from './git.js';
-import { NO_MEASURABLE_LINES } from './metrics.js';
 import type { Durability } from './types.js';
 
 export interface DurabilityInput {
@@ -14,8 +14,6 @@ export interface DurabilityCache {
   get(key: string): { baseline: number; surviving: number } | undefined;
   set(key: string, value: { baseline: number; surviving: number }): void;
 }
-
-const DAY = 86_400_000;
 
 /**
  * Finds the commits on the default branch that carry a PR's lines, plus the commit
@@ -33,7 +31,7 @@ export async function prOwners(repoPath: string, pr: DurabilityInput, mergeOid: 
   const owners = new Set([mergeOid]);
   let last = mergeOid;
   if (pr.commitCount > 1) {
-    const subjects = new Set(pr.commits.map((c) => c.message.split('\n')[0]!.trim()));
+    const subjects = new Set(pr.commits.map((c) => g.subject(c.message)));
     const chain = await g.firstParentSubjects(repoPath, mergeOid, pr.commitCount);
     for (const c of chain.slice(1)) {
       if (!subjects.has(c.subject.trim())) break;
@@ -58,20 +56,28 @@ export async function measureDurability(
   now: Date,
   cache?: DurabilityCache,
 ): Promise<Durability> {
-  const unavailable = (reason: string): Durability => ({ status: 'unavailable', baseline: 0, surviving: 0, reason });
-  const oid = pr.mergeCommitOid;
-  if (!oid) return unavailable('no merge commit');
+  const unavailable = (reason: UnavailableReason, baseline = 0, surviving = 0): Durability => ({
+    status: DurabilityStatus.Unavailable,
+    baseline,
+    surviving,
+    reason,
+  });
+  const measured = (baseline: number, surviving: number): Durability =>
+    baseline > 0 ? { status: DurabilityStatus.Measured, baseline, surviving } : unavailable(UnavailableReason.NoMeasurableLines, baseline, surviving);
 
-  const due = new Date(Date.parse(pr.mergedAt) + cfg.windowDays * DAY);
-  if (due > now) return { status: 'pending', baseline: 0, surviving: 0 };
+  const oid = pr.mergeCommitOid;
+  if (!oid) return unavailable(UnavailableReason.NoMergeCommit);
+
+  const due = new Date(Date.parse(pr.mergedAt) + cfg.windowDays * MS_PER_DAY);
+  if (due > now) return { status: DurabilityStatus.Pending, baseline: 0, surviving: 0 };
 
   const key = `${oid}:${cfg.windowDays}`;
   const cached = cache?.get(key);
-  if (cached) return cached.baseline > 0 ? { status: 'measured', ...cached } : { status: 'unavailable', ...cached, reason: NO_MEASURABLE_LINES };
+  if (cached) return measured(cached.baseline, cached.surviving);
 
-  if (!(await g.hasCommit(repoPath, oid))) return unavailable('merge commit not in local history (use fetch-depth: 0)');
+  if (!(await g.hasCommit(repoPath, oid))) return unavailable(UnavailableReason.NotInHistory);
   const later = await g.commitAt(repoPath, ref, due);
-  if (!later || !(await g.isAncestor(repoPath, oid, later))) return unavailable('not merged into the default branch');
+  if (!later || !(await g.isAncestor(repoPath, oid, later))) return unavailable(UnavailableReason.NotOnBranch);
 
   const { owners, base } = await prOwners(repoPath, pr, oid);
   const ignored = fileMatcher(cfg.ignoreFiles);
@@ -89,6 +95,5 @@ export async function measureDurability(
   }
 
   cache?.set(key, { baseline, surviving });
-  if (baseline === 0) return { status: 'unavailable', baseline, surviving, reason: NO_MEASURABLE_LINES };
-  return { status: 'measured', baseline, surviving };
+  return measured(baseline, surviving);
 }

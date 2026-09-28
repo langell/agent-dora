@@ -1,15 +1,14 @@
 import { classify, isIgnoredAuthor } from './classify.js';
 import { commitChanges, directCommitCount } from './commits.js';
 import type { Config } from './config.js';
+import { isoDate, MS_PER_DAY, Unit, UnitSetting } from './constants.js';
 import type { Store } from './db.js';
 import { measureDurability } from './durability.js';
 import * as g from './git.js';
 import type { GitHub } from './github.js';
 import { buildPrRecord } from './metrics.js';
 import { findRework } from './rework.js';
-import type { ChangeRecord, OpenPrRecord, Snapshot, Unit } from './types.js';
-
-const DAY = 86_400_000;
+import type { ChangeRecord, OpenPrRecord, Snapshot } from './types.js';
 
 export interface CollectOptions {
   repoPath: string;
@@ -24,14 +23,14 @@ export interface CollectOptions {
  * `auto` picks commits when more changes land directly on the branch than
  * through merged PRs, which is typical of solo, push-to-branch repos.
  */
-export function chooseUnit(requested: Config['unit'], mergedPrs: number, directCommits: number): Unit {
-  if (requested !== 'auto') return requested;
-  return directCommits > mergedPrs ? 'commits' : 'prs';
+export function chooseUnit(requested: UnitSetting, mergedPrs: number, directCommits: number): Unit {
+  if (requested !== UnitSetting.Auto) return requested;
+  return directCommits > mergedPrs ? Unit.Commits : Unit.Prs;
 }
 
 export async function collect({ repoPath, gh, cfg, store, now = new Date(), log = () => {} }: CollectOptions): Promise<Snapshot> {
   const repo = `${gh.owner}/${gh.name}`;
-  const since = new Date(now.getTime() - cfg.sinceDays * DAY);
+  const since = new Date(now.getTime() - cfg.sinceDays * MS_PER_DAY);
 
   if (await g.isShallow(repoPath)) {
     throw new Error('This is a shallow clone, so durability cannot be measured. Run `git fetch --unshallow`, or use `fetch-depth: 0` in actions/checkout.');
@@ -40,7 +39,7 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
   const branch = cfg.branch ?? defaultBranch;
   const ref = await g.resolveRef(repoPath, branch);
 
-  log(`Fetching merged PRs for ${repo} since ${since.toISOString().slice(0, 10)}...`);
+  log(`Fetching merged PRs for ${repo} since ${isoDate(since.toISOString())}...`);
   const merged = (await gh.mergedPrs(since, (n) => log(`  ${n} PRs`)))
     .filter((p) => p.mergedAt && p.baseRefName === branch && !isIgnoredAuthor(p.author, cfg));
   const open = (await gh.openPrs()).filter((p) => !p.isDraft && p.baseRefName === branch && !isIgnoredAuthor(p.author, cfg));
@@ -50,17 +49,17 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
   const direct = directCommitCount(branchCommits, merged);
   const unit = chooseUnit(cfg.unit, merged.length, direct);
   const notes: string[] = [];
-  if (unit === 'commits' && cfg.unit === 'auto') {
-    notes.push(`Most changes on ${branch} bypass pull requests (${direct} direct commits vs ${merged.length} merged PRs), so each commit counts as a change. Use --unit prs to count pull requests instead.`);
-  } else if (unit === 'prs' && direct > 0) {
-    notes.push(`${direct} commits landed on ${branch} without a pull request and aren't counted. Use --unit commits to include them.`);
+  if (unit === Unit.Commits && cfg.unit === UnitSetting.Auto) {
+    notes.push(`Most changes on ${branch} bypass pull requests (${direct} direct commits vs ${merged.length} merged PRs), so each commit counts as a change. Use --unit ${Unit.Prs} to count pull requests instead.`);
+  } else if (unit === Unit.Prs && direct > 0) {
+    notes.push(`${direct} commits landed on ${branch} without a pull request and aren't counted. Use --unit ${Unit.Commits} to include them.`);
   }
-  if (unit === 'commits') notes.push('Commit mode: review time is not available, and lead time is first commit to landing on the branch.');
+  if (unit === Unit.Commits) notes.push('Commit mode: review time is not available, and lead time is first commit to landing on the branch.');
   for (const n of notes) log(`Note: ${n}`);
 
   const cache = store.durabilityCache();
   let changes: ChangeRecord[];
-  if (unit === 'commits') {
+  if (unit === Unit.Commits) {
     changes = await commitChanges({ repoPath, ref, repo, since, cfg, now, bugIssues: bugs, cache, log });
   } else {
     const reverts = await g.revertCommits(repoPath, ref, since);
@@ -73,9 +72,8 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
     log(`Measuring durability of ${merged.length} PRs against ${ref}...`);
     changes = [];
     for (const [i, pr] of merged.entries()) {
-      const { authorClass, reason } = classify(pr, cfg);
       const durability = await measureDurability(repoPath, ref, { ...pr, mergedAt: pr.mergedAt! }, cfg, now, cache);
-      changes.push(buildPrRecord(pr, authorClass, reason, rework.filter((e) => e.target === pr.number), durability, cfg));
+      changes.push(buildPrRecord(pr, classify(pr, cfg), rework.filter((e) => e.target === pr.number), durability, cfg));
       if ((i + 1) % 25 === 0) log(`  ${i + 1}/${merged.length}`);
     }
   }

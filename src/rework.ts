@@ -1,4 +1,5 @@
 import type { Config } from './config.js';
+import { prId, ReworkKind, shortSha } from './constants.js';
 import type { RevertCommit } from './git.js';
 import type { RawIssue, RawPr, ReworkEvent } from './types.js';
 
@@ -8,6 +9,9 @@ const CAUSED_BY = /\b(?:caused[- ]by|regressed[- ]by|regression (?:from|in|intro
 const GITHUB_REVERT_BODY = /\bReverts [\w.-]+\/[\w.-]+#(\d+)/g;
 const REVERT_TITLE = /^Revert "(.+)"$/;
 const PR_REF = /(?:^|[^\w/])#(\d+)\b/g;
+
+/** How an issue that reported a bug is shown as a rework source. */
+const issueSource = (number: number) => `issue ${prId(number)}`;
 
 const refs = (text: string, re: RegExp) => [...text.matchAll(re)].map((m) => Number(m[1]));
 
@@ -37,7 +41,7 @@ export function findRework(
   const add = (target: number, kind: ReworkEvent['kind'], at: string, source: string) => {
     const t = byNumber.get(target);
     // Only count fixes that happened after the target merged, and never self-references.
-    if (!t?.mergedAt || source === `#${target}` || Date.parse(at) < Date.parse(t.mergedAt)) return;
+    if (!t?.mergedAt || source === prId(target) || Date.parse(at) < Date.parse(t.mergedAt)) return;
     const key = `${target}:${kind}:${source}`;
     if (!events.has(key)) events.set(key, { target, kind, at, source });
   };
@@ -45,26 +49,26 @@ export function findRework(
   for (const r of reverts) {
     for (const short of r.reverts) {
       const n = byOid.get(resolveOid(short));
-      if (n !== undefined) add(n, 'revert', r.at, r.oid.slice(0, 7));
+      if (n !== undefined) add(n, ReworkKind.Revert, r.at, shortSha(r.oid));
     }
   }
 
   for (const p of merged) {
     if (!p.mergedAt) continue;
-    const src = `#${p.number}`;
-    for (const n of refs(p.body, GITHUB_REVERT_BODY)) add(n, 'revert', p.mergedAt, src);
+    const src = prId(p.number);
+    for (const n of refs(p.body, GITHUB_REVERT_BODY)) add(n, ReworkKind.Revert, p.mergedAt, src);
     const title = REVERT_TITLE.exec(p.title)?.[1];
     const reverted = title !== undefined ? byTitle.get(title) : undefined;
-    if (reverted !== undefined) add(reverted, 'revert', p.mergedAt, src);
+    if (reverted !== undefined) add(reverted, ReworkKind.Revert, p.mergedAt, src);
 
     if (p.labels.some((l) => reworkLabels.has(l.toLowerCase()))) {
-      for (const n of refs(`${p.title}\n${p.body}`, PR_REF)) add(n, 'rework', p.mergedAt, src);
+      for (const n of refs(`${p.title}\n${p.body}`, PR_REF)) add(n, ReworkKind.Rework, p.mergedAt, src);
     }
-    for (const n of refs(p.body, CAUSED_BY)) add(n, 'bug', p.mergedAt, src);
+    for (const n of refs(p.body, CAUSED_BY)) add(n, ReworkKind.Bug, p.mergedAt, src);
   }
 
   for (const issue of bugIssues) {
-    for (const n of refs(`${issue.title}\n${issue.body}`, CAUSED_BY)) add(n, 'bug', issue.createdAt, `issue #${issue.number}`);
+    for (const n of refs(`${issue.title}\n${issue.body}`, CAUSED_BY)) add(n, ReworkKind.Bug, issue.createdAt, issueSource(issue.number));
   }
 
   return [...events.values()];
@@ -104,12 +108,12 @@ export function findCommitRework(
     if (!events.has(key)) events.set(key, { target: t.oid, kind, at, source });
   };
 
-  for (const r of reverts) for (const short of r.reverts) add(short, 'revert', r.at, r.oid.slice(0, 7), r.oid);
+  for (const r of reverts) for (const short of r.reverts) add(short, ReworkKind.Revert, r.at, shortSha(r.oid), r.oid);
   for (const c of changes) {
-    for (const m of c.message.matchAll(CAUSED_BY_SHA)) add(m[1]!, 'bug', c.committedAt, c.oid.slice(0, 7), c.oid);
+    for (const m of c.message.matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, c.committedAt, shortSha(c.oid), c.oid);
   }
   for (const issue of bugIssues) {
-    for (const m of `${issue.title}\n${issue.body}`.matchAll(CAUSED_BY_SHA)) add(m[1]!, 'bug', issue.createdAt, `issue #${issue.number}`);
+    for (const m of `${issue.title}\n${issue.body}`.matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, issue.createdAt, issueSource(issue.number));
   }
   return [...events.values()];
 }

@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { ChangeKind, ClassSource, prId, Unit } from './constants.js';
 import type { DurabilityCache } from './durability.js';
 import type { ChangeRecord, Snapshot } from './types.js';
 
@@ -33,12 +34,13 @@ export class Store {
       ? this.db.prepare('SELECT data FROM snapshots WHERE repo = ?').get(repo)
       : this.db.prepare('SELECT data FROM snapshots ORDER BY collected_at DESC LIMIT 1').get();
     if (!row) return null;
-    const snap = JSON.parse(String(row.data)) as Snapshot & { prs?: Omit<ChangeRecord, 'kind' | 'id'>[] };
+    const snap = JSON.parse(String(row.data)) as Snapshot & { prs?: Omit<ChangeRecord, 'kind' | 'id' | 'classSource'>[] };
     // Snapshots from 0.1.x stored PRs under `prs`, before commit mode existed.
     if (snap.prs && !snap.changes) {
-      snap.changes = snap.prs.map((p) => ({ ...p, kind: 'pr', id: `#${p.number}` }));
+      // 0.1.x didn't record which signal classified a PR; only live labelling reads it.
+      snap.changes = snap.prs.map((p) => ({ ...p, kind: ChangeKind.Pr, id: prId(p.number!), classSource: ClassSource.None }));
       snap.branch ??= snap.defaultBranch;
-      snap.unit ??= 'prs';
+      snap.unit ??= Unit.Prs;
       snap.notes ??= [];
       delete snap.prs;
     }

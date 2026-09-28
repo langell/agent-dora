@@ -1,10 +1,37 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { MS_PER_SECOND, TOOL_NAME } from './constants.js';
 import type { RawIssue, RawPr } from './types.js';
 
 const run = promisify(execFile);
+
+// GitHub Actions sets these on GitHub Enterprise Server; github.com otherwise.
 const API = process.env.GITHUB_API_URL ?? 'https://api.github.com';
 const GRAPHQL = process.env.GITHUB_GRAPHQL_URL ?? `${API}/graphql`;
+
+const USER_AGENT = TOOL_NAME;
+const REST_MEDIA_TYPE = 'application/vnd.github+json';
+
+/** GitHub's GraphQL `PullRequestState` values. */
+const PrState = { Merged: 'MERGED', Open: 'OPEN' } as const;
+type PrState = (typeof PrState)[keyof typeof PrState];
+
+/** Issue timeline event type for a label being added. */
+const EVENT_LABELED = 'labeled';
+
+// Page sizes. PRs with more commits, reviews or labels than these are read partially.
+const PR_PAGE_SIZE = 50;
+const ISSUE_PAGE_SIZE = 100;
+const REST_PAGE_SIZE = 100;
+const MAX_PR_LABELS = 30;
+const MAX_PR_COMMITS = 100;
+const MAX_PR_REVIEWS = 50;
+
+// Retry transient failures and secondary rate limits (which GitHub reports as 403).
+const RETRY_STATUSES = new Set([403, 502, 503]);
+const MAX_RETRIES = 3;
+const BACKOFF_BASE_SECONDS = 5;
+const HTTP_NOT_FOUND = 404;
 
 /** GITHUB_TOKEN / GH_TOKEN, falling back to the GitHub CLI's login. */
 export async function resolveToken(): Promise<string> {
@@ -22,10 +49,10 @@ export async function resolveToken(): Promise<string> {
 const PR_FIELDS = `
   number title body url createdAt mergedAt isDraft headRefName baseRefName additions deletions
   author{login}
-  labels(first:30){nodes{name}}
+  labels(first:${MAX_PR_LABELS}){nodes{name}}
   mergeCommit{oid}
-  commits(first:100){totalCount nodes{commit{oid message authoredDate}}}
-  reviews(first:50){nodes{submittedAt author{login}}}
+  commits(first:${MAX_PR_COMMITS}){totalCount nodes{commit{oid message authoredDate}}}
+  reviews(first:${MAX_PR_REVIEWS}){nodes{submittedAt author{login}}}
 `;
 
 type PrNode = {
@@ -67,6 +94,14 @@ export class GitHub {
     readonly name: string,
   ) {}
 
+  private get restHeaders() {
+    return { authorization: `bearer ${this.token}`, accept: REST_MEDIA_TYPE, 'user-agent': USER_AGENT };
+  }
+
+  private get restBase() {
+    return `${API}/repos/${this.owner}/${this.name}`;
+  }
+
   static parseRepo(repo: string): { owner: string; name: string } {
     const [owner, name] = repo.split('/');
     if (!owner || !name) throw new Error(`Expected owner/name, got "${repo}"`);
@@ -77,12 +112,12 @@ export class GitHub {
     for (let attempt = 0; ; attempt++) {
       const res = await fetch(GRAPHQL, {
         method: 'POST',
-        headers: { authorization: `bearer ${this.token}`, 'content-type': 'application/json', 'user-agent': 'agent-dora' },
+        headers: { authorization: `bearer ${this.token}`, 'content-type': 'application/json', 'user-agent': USER_AGENT },
         body: JSON.stringify({ query, variables }),
       });
-      if ((res.status === 502 || res.status === 503 || res.status === 403) && attempt < 3) {
-        const retryAfter = Number(res.headers.get('retry-after')) || 2 ** attempt * 5;
-        await new Promise((r) => setTimeout(r, retryAfter * 1000));
+      if (RETRY_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+        const retryAfterSeconds = Number(res.headers.get('retry-after')) || 2 ** attempt * BACKOFF_BASE_SECONDS;
+        await new Promise((r) => setTimeout(r, retryAfterSeconds * MS_PER_SECOND));
         continue;
       }
       const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
@@ -104,17 +139,17 @@ export class GitHub {
 
   /** Merged PRs created on or after `since`, newest first. */
   async mergedPrs(since: Date, onPage?: (n: number) => void): Promise<RawPr[]> {
-    return this.pullRequests('MERGED', since, onPage);
+    return this.pullRequests(PrState.Merged, since, onPage);
   }
 
   async openPrs(): Promise<RawPr[]> {
-    return this.pullRequests('OPEN', new Date(0));
+    return this.pullRequests(PrState.Open, new Date(0));
   }
 
-  private async pullRequests(state: 'MERGED' | 'OPEN', since: Date, onPage?: (n: number) => void): Promise<RawPr[]> {
+  private async pullRequests(state: PrState, since: Date, onPage?: (n: number) => void): Promise<RawPr[]> {
     const query = `query($owner:String!,$name:String!,$cursor:String,$states:[PullRequestState!]){
       repository(owner:$owner,name:$name){
-        pullRequests(states:$states, first:50, after:$cursor, orderBy:{field:CREATED_AT, direction:DESC}){
+        pullRequests(states:$states, first:${PR_PAGE_SIZE}, after:$cursor, orderBy:{field:CREATED_AT, direction:DESC}){
           pageInfo{hasNextPage endCursor}
           nodes{${PR_FIELDS}}
         }
@@ -145,7 +180,7 @@ export class GitHub {
     if (!labels.length) return [];
     const query = `query($owner:String!,$name:String!,$cursor:String,$labels:[String!]){
       repository(owner:$owner,name:$name){
-        issues(labels:$labels, first:100, after:$cursor, orderBy:{field:CREATED_AT, direction:DESC}){
+        issues(labels:$labels, first:${ISSUE_PAGE_SIZE}, after:$cursor, orderBy:{field:CREATED_AT, direction:DESC}){
           pageInfo{hasNextPage endCursor}
           nodes{number title body createdAt}
         }
@@ -177,26 +212,25 @@ export class GitHub {
 
   /** Login of whoever most recently applied `label` to an issue or PR, if anyone. */
   async labelActor(number: number, label: string): Promise<string | null> {
-    const headers = { authorization: `bearer ${this.token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-dora' };
     let actor: string | null = null;
     for (let page = 1; ; page++) {
-      const res = await fetch(`${API}/repos/${this.owner}/${this.name}/issues/${number}/events?per_page=100&page=${page}`, { headers });
+      const res = await fetch(`${this.restBase}/issues/${number}/events?per_page=${REST_PAGE_SIZE}&page=${page}`, { headers: this.restHeaders });
       if (!res.ok) throw new Error(`Reading events of #${number} failed: ${res.status}`);
       const events = (await res.json()) as { event: string; label?: { name: string }; actor?: { login: string } | null }[];
       for (const e of events) {
-        if (e.event === 'labeled' && e.label?.name === label) actor = e.actor?.login ?? null;
+        if (e.event === EVENT_LABELED && e.label?.name === label) actor = e.actor?.login ?? null;
       }
-      if (events.length < 100) return actor;
+      if (events.length < REST_PAGE_SIZE) return actor;
     }
   }
 
   /** Replaces any existing label from `family` with `label` on an issue or PR. */
   async setLabel(number: number, label: string, family: string[]): Promise<void> {
-    const base = `${API}/repos/${this.owner}/${this.name}/issues/${number}/labels`;
-    const headers = { authorization: `bearer ${this.token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-dora' };
+    const base = `${this.restBase}/issues/${number}/labels`;
+    const headers = this.restHeaders;
     for (const other of family.filter((f) => f !== label)) {
       const res = await fetch(`${base}/${encodeURIComponent(other)}`, { method: 'DELETE', headers });
-      if (!res.ok && res.status !== 404) throw new Error(`Removing label ${other} failed: ${res.status}`);
+      if (!res.ok && res.status !== HTTP_NOT_FOUND) throw new Error(`Removing label ${other} failed: ${res.status}`);
     }
     const res = await fetch(base, { method: 'POST', headers, body: JSON.stringify({ labels: [label] }) });
     if (!res.ok) throw new Error(`Adding label ${label} failed: ${res.status} ${await res.text()}`);
