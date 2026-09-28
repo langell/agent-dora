@@ -6,8 +6,15 @@ split by agent / assisted / human authorship. TypeScript on Node 22, zero runtim
 ## Commands
 - `npm test`: type-check and run the suite (includes real temporary git repos)
 - `node dist/src/cli.js --help`: run the local build (after `npx tsc`)
-- Release: `npm version patch && git push --follow-tags`. The `release.yml` workflow publishes to npm
+- Release (from `main` only, see Branching): `npm version patch && git push --follow-tags`. The `release.yml` workflow publishes to npm
   via trusted publishing and moves the `v0` tag. Never rename `release.yml`: npm's trusted publisher is bound to it.
+
+## Branching
+All new work happens on a branch, never directly on `main`:
+1. Branch from an up-to-date `main`, named by kind: `feat/…`, `fix/…`, `refactor/…`, `docs/…`, `chore/…`.
+2. Commit there, push, and open a PR against `main`. CI must pass before merging.
+3. Release only from `main`, after the PR is merged: `npm version <patch|minor>` on `main`, then
+   `git push --follow-tags`.
 
 ## Layout
 - `src/constants.ts`: every shared value (see below)
