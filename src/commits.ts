@@ -38,12 +38,14 @@ export async function commitChanges(
   log(`Measuring durability of ${units.length} commits against ${ref}...`);
   const out: ChangeRecord[] = [];
   const tick = progress(log, units.length);
-  for (const { c, merged } of units) {
+  for (const { c, merged, owners } of units) {
     const cls = classify(
       { author: c.authorName, labels: [], headRefName: '', body: '', commits: [{ message: c.message }, ...merged] },
       cfg,
     );
-    const durability = await measureDurability(repoPath, ref, { mergeCommitOid: c.oid, mergedAt: c.committedAt, commitCount: 1, commits: [] }, cfg, now, cache);
+    // The commits a change carries are already known here, so durability needn't look them up.
+    const lines = async () => ({ owners, base: c.parents[0] ?? g.EMPTY_TREE });
+    const durability = await measureDurability(repoPath, ref, { oid: c.oid, landedAt: c.committedAt }, lines, cfg, now, cache);
     const firstCommit = Math.min(Date.parse(c.authoredAt), ...merged.map((m) => Date.parse(m.authoredAt)));
     const events = rework.filter((e) => e.target === c.oid);
     out.push({
