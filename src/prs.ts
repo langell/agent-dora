@@ -5,7 +5,7 @@ import { buildPrRecord } from './metrics.js';
 import type { ModeOptions } from './modes.js';
 import { findRework } from './rework.js';
 import type { ChangeRecord, RawPr } from './types.js';
-import { progress } from './util.js';
+import { GIT_CONCURRENCY, mapLimit, progress } from './util.js';
 
 /** PR mode: every PR merged into the branch is one change. */
 export async function prChanges(prs: RawPr[], { repoPath, ref, since, cfg, now, bugIssues, cache, log = () => {} }: ModeOptions): Promise<ChangeRecord[]> {
@@ -14,13 +14,11 @@ export async function prChanges(prs: RawPr[], { repoPath, ref, since, cfg, now, 
   const rework = findRework(prs, bugIssues, reverts, resolve, cfg);
 
   log(`Measuring durability of ${prs.length} PRs against ${ref}...`);
-  const out: ChangeRecord[] = [];
   const tick = progress(log, prs.length);
-  for (const pr of prs) {
+  return mapLimit(prs, GIT_CONCURRENCY, async (pr): Promise<ChangeRecord> => {
     const landed = { oid: pr.mergeCommitOid, landedAt: pr.mergedAt! };
     const durability = await measureDurability(repoPath, ref, landed, (oid) => prLines(repoPath, pr, oid), cfg, now, cache);
-    out.push(buildPrRecord(pr, classify(pr, cfg), rework.filter((e) => e.target === pr.number), durability, cfg));
     tick();
-  }
-  return out;
+    return buildPrRecord(pr, classify(pr, cfg), rework.filter((e) => e.target === pr.number), durability, cfg);
+  });
 }

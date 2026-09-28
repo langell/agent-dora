@@ -6,7 +6,7 @@ import { isDurable } from './metrics.js';
 import type { ModeOptions } from './modes.js';
 import { causedByShas, findCommitRework } from './rework.js';
 import type { ChangeRecord } from './types.js';
-import { progress } from './util.js';
+import { GIT_CONCURRENCY, mapLimit, progress } from './util.js';
 
 /**
  * Commit mode: every commit on the branch's first-parent chain is one change.
@@ -17,11 +17,10 @@ export async function commitChanges(
   commits: g.BranchCommit[],
   { repoPath, ref, repo, since, cfg, now, bugIssues, cache, log = () => {} }: ModeOptions,
 ): Promise<ChangeRecord[]> {
-  const units = [];
-  for (const c of commits) {
+  const units = await mapLimit(commits, GIT_CONCURRENCY, async (c) => {
     const merged = c.parents.length >= 2 ? await g.commitsIn(repoPath, `${c.parents[0]}..${c.parents[1]}`) : [];
-    units.push({ c, merged, owners: new Set([c.oid, ...merged.map((m) => m.oid)]) });
-  }
+    return { c, merged, owners: new Set([c.oid, ...merged.map((m) => m.oid)]) };
+  });
 
   const reverts = await g.revertCommits(repoPath, ref, since);
   const resolve = await g.expandOids(repoPath, [
@@ -36,9 +35,8 @@ export async function commitChanges(
   );
 
   log(`Measuring durability of ${units.length} commits against ${ref}...`);
-  const out: ChangeRecord[] = [];
   const tick = progress(log, units.length);
-  for (const { c, merged, owners } of units) {
+  return mapLimit(units, GIT_CONCURRENCY, async ({ c, merged, owners }): Promise<ChangeRecord> => {
     const cls = classify(
       { author: c.authorName, labels: [], headRefName: '', body: '', commits: [{ message: c.message }, ...merged] },
       cfg,
@@ -48,7 +46,9 @@ export async function commitChanges(
     const durability = await measureDurability(repoPath, ref, { oid: c.oid, landedAt: c.committedAt }, lines, cfg, now, cache);
     const firstCommit = Math.min(Date.parse(c.authoredAt), ...merged.map((m) => Date.parse(m.authoredAt)));
     const events = rework.filter((e) => e.target === c.oid);
-    out.push({
+    const size = await g.diffSize(repoPath, c.parents[0] ?? g.EMPTY_TREE, c.oid);
+    tick();
+    return {
       kind: ChangeKind.Commit,
       id: shortSha(c.oid),
       number: null,
@@ -64,14 +64,12 @@ export async function commitChanges(
       firstReviewAt: null,
       leadTimeHours: Math.max(0, (Date.parse(c.committedAt) - firstCommit) / MS_PER_HOUR),
       reviewWaitHours: null,
-      size: await g.diffSize(repoPath, c.parents[0] ?? g.EMPTY_TREE, c.oid),
+      size,
       rework: events,
       durability,
       durable: isDurable(c.committedAt, events, durability, cfg),
-    });
-    tick();
-  }
-  return out;
+    };
+  });
 }
 
 /**
