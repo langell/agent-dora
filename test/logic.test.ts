@@ -194,3 +194,26 @@ test('mapLimit keeps input order and never exceeds the limit', async () => {
   assert.equal(peak, 3);
   assert.deepEqual(await mapLimit([], 4, async (x) => x), []);
 });
+
+test('weeklySeries buckets by Monday-start UTC week and marks matured weeks', async () => {
+  const { period, weeklySeries } = await import('../src/metrics.js');
+  const snap = snapshot();
+  const now = new Date(snap.collectedAt);
+  const p = period(snap, now);
+  const weeks = weeklySeries(snap.changes, p, now);
+  for (const w of weeks) assert.equal(new Date(w.week).getUTCDay(), 1, `${w.week} is a Monday`);
+  assert.equal(weeks.reduce((n, w) => n + w.merged.all, 0), snap.changes.length);
+  assert.equal(weeks.reduce((n, w) => n + w.merged.agent, 0), 2);
+  // A week is matured only if it ended before the durability window began.
+  for (const w of weeks) assert.equal(w.matured, Date.parse(w.week) + 7 * DAY <= p.maturedUntil);
+  assert.deepEqual(weeklySeries([], period({ ...snap, changes: [] }, now), now).length > 0, true);
+});
+
+test('classStats on an empty class is empty, not zero', async () => {
+  const { classStats, period } = await import('../src/metrics.js');
+  const snap = snapshot();
+  const now = new Date(snap.collectedAt);
+  const s = classStats([], [], period(snap, now), now);
+  assert.equal(s.merged, 0);
+  for (const k of ['durableRate', 'durablePerWeek', 'churn', 'changeFailureRate', 'leadTimeP50Hours', 'sizeP50'] as const) assert.equal(s[k], null, k);
+});
