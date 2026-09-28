@@ -178,3 +178,19 @@ test('progress logs every PROGRESS_EVERY items', async () => {
   for (let i = 0; i < PROGRESS_EVERY * 2 + 3; i++) tick();
   assert.deepEqual(lines, [`  ${PROGRESS_EVERY}/${PROGRESS_EVERY * 2 + 3}`, `  ${PROGRESS_EVERY * 2}/${PROGRESS_EVERY * 2 + 3}`]);
 });
+
+test('mapLimit keeps input order and never exceeds the limit', async () => {
+  const { mapLimit } = await import('../src/util.js');
+  let inFlight = 0;
+  let peak = 0;
+  const delays = [30, 5, 20, 1, 15, 10, 2, 25];
+  const out = await mapLimit(delays, 3, async (ms) => {
+    peak = Math.max(peak, ++inFlight);
+    await new Promise((r) => setTimeout(r, ms));
+    inFlight--;
+    return ms * 2;
+  });
+  assert.deepEqual(out, delays.map((ms) => ms * 2));
+  assert.equal(peak, 3);
+  assert.deepEqual(await mapLimit([], 4, async (x) => x), []);
+});
