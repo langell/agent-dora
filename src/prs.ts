@@ -1,5 +1,5 @@
 import { classify } from './classify.js';
-import { measureDurability } from './durability.js';
+import { measureDurability, prLines } from './durability.js';
 import * as g from './git.js';
 import { buildPrRecord } from './metrics.js';
 import type { ModeOptions } from './modes.js';
@@ -17,7 +17,8 @@ export async function prChanges(prs: RawPr[], { repoPath, ref, since, cfg, now, 
   const out: ChangeRecord[] = [];
   const tick = progress(log, prs.length);
   for (const pr of prs) {
-    const durability = await measureDurability(repoPath, ref, { ...pr, mergedAt: pr.mergedAt! }, cfg, now, cache);
+    const landed = { oid: pr.mergeCommitOid, landedAt: pr.mergedAt! };
+    const durability = await measureDurability(repoPath, ref, landed, (oid) => prLines(repoPath, pr, oid), cfg, now, cache);
     out.push(buildPrRecord(pr, classify(pr, cfg), rework.filter((e) => e.target === pr.number), durability, cfg));
     tick();
   }
