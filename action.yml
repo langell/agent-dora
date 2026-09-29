@@ -22,7 +22,7 @@ inputs:
     description: "What counts as a change: auto, prs or commits (default auto: commits when most changes skip PRs)."
     default: ""
   branch:
-    description: Branch to measure (default: the repository's default branch).
+    description: "Branch to measure (default: the repository's default branch)."
     default: ""
   since-days:
     description: How many days of merged PRs to include (default 180).
