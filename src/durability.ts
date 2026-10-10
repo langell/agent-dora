@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { fileMatcher, type Config } from './config.js';
 import { DurabilityStatus, MS_PER_DAY, UnavailableReason, type ChangeKind } from './constants.js';
 import * as g from './git.js';
-import type { Durability } from './types.js';
+import type { CurvePoint, Durability, FileSurvival } from './types.js';
 
 /** A change as durability sees it: the commit that landed it on the branch, and when. */
 export interface LandedChange {
@@ -35,13 +35,22 @@ const KEY_HASH_LENGTH = 12;
  * measured against, and the ignored files.
  */
 export function durabilityKey(oid: string, kind: ChangeKind, ref: string, cfg: Config): string {
-  const scope = createHash('sha1').update(JSON.stringify({ kind, ref, ignoreFiles: cfg.ignoreFiles })).digest('hex').slice(0, KEY_HASH_LENGTH);
+  const settings = { kind, ref, ignoreFiles: cfg.ignoreFiles, checkpoints: checkpointDays(cfg) };
+  const scope = createHash('sha1').update(JSON.stringify(settings)).digest('hex').slice(0, KEY_HASH_LENGTH);
   return `${oid}:${cfg.windowDays}:${scope}`;
 }
 
+/** The configured checkpoints that fall inside the window, in order, without duplicates. */
+export function checkpointDays(cfg: Config): number[] {
+  return [...new Set(cfg.checkpointDays.filter((d) => d < cfg.windowDays))].sort((a, b) => a - b);
+}
+
+/** What a measurement found; immutable once the window has passed, so it's cached. */
+export type Measurement = Pick<Durability, 'baseline' | 'surviving' | 'files' | 'curve'>;
+
 export interface DurabilityCache {
-  get(key: string): { baseline: number; surviving: number } | undefined;
-  set(key: string, value: { baseline: number; surviving: number }): void;
+  get(key: string): Measurement | undefined;
+  set(key: string, value: Measurement): void;
 }
 
 /**
@@ -74,7 +83,8 @@ export async function prLines(repoPath: string, pr: PrCommits, mergeOid: string)
 
 /**
  * Measures how many of a change's added lines are still on the branch
- * `windowDays` after it landed, using `git blame` at both points in time.
+ * `windowDays` after it landed, using `git blame` at both points in time,
+ * per file and at each checkpoint along the way.
  * Lines that were moved to a different file count as churned.
  *
  * `lines` is only called when a measurement is actually needed (not pending,
@@ -95,8 +105,8 @@ export async function measureDurability(
     surviving,
     reason,
   });
-  const measured = (baseline: number, surviving: number): Durability =>
-    baseline > 0 ? { status: DurabilityStatus.Measured, baseline, surviving } : unavailable(UnavailableReason.NoMeasurableLines, baseline, surviving);
+  const measured = (m: Measurement): Durability =>
+    m.baseline > 0 ? { status: DurabilityStatus.Measured, ...m } : unavailable(UnavailableReason.NoMeasurableLines, m.baseline, m.surviving);
 
   const oid = change.oid;
   if (!oid) return unavailable(UnavailableReason.NoMergeCommit);
@@ -106,7 +116,7 @@ export async function measureDurability(
 
   const key = durabilityKey(oid, change.kind, ref, cfg);
   const cached = cache?.get(key);
-  if (cached) return measured(cached.baseline, cached.surviving);
+  if (cached) return measured(cached);
 
   if (!(await g.hasCommit(repoPath, oid))) return unavailable(UnavailableReason.NotInHistory);
   const later = await g.commitAt(repoPath, ref, due);
@@ -115,18 +125,39 @@ export async function measureDurability(
   const { owners, base } = await lines(oid);
   const ignored = fileMatcher(cfg.ignoreFiles);
   const files = (await g.addedFiles(repoPath, base, oid)).filter((f) => !ignored(f));
-  const moved = await g.movedFiles(repoPath, oid, later);
+  const landedAt = Date.parse(change.landedAt);
+  // Each point in time to measure at: the checkpoints (if the branch reaches them), then the window's end.
+  const points = await Promise.all(
+    checkpointDays(cfg).map(async (days) => {
+      const rev = await g.commitAt(repoPath, ref, new Date(landedAt + days * MS_PER_DAY));
+      return rev && (await g.isAncestor(repoPath, oid, rev)) ? { days, rev } : { days, rev: null };
+    }),
+  );
+  const revs = [...points.flatMap((p) => (p.rev ? [p.rev] : [])), later];
+  const movedAt = new Map(await Promise.all(revs.map(async (rev) => [rev, await g.movedFiles(repoPath, oid, rev)] as const)));
+  /** Lines of `file` still attributed to the change at `rev`, following renames. */
+  const left = async (file: string, rev: string) => {
+    const moved = movedAt.get(rev)!;
+    const path = moved.has(file) ? moved.get(file) : file;
+    return path ? ((await g.blameCount(repoPath, rev, path, owners)) ?? 0) : 0;
+  };
 
   let baseline = 0;
   let surviving = 0;
+  const fileResults: FileSurvival[] = [];
+  const atPoint = points.map(() => 0);
   for (const file of files) {
     const before = await g.blameCount(repoPath, oid, file, owners);
     if (!before) continue;
     baseline += before;
-    const nowPath = moved.has(file) ? moved.get(file) : file;
-    if (nowPath) surviving += (await g.blameCount(repoPath, later, nowPath, owners)) ?? 0;
+    const after = await left(file, later);
+    surviving += after;
+    fileResults.push({ path: file, baseline: before, surviving: after });
+    for (const [i, p] of points.entries()) if (p.rev) atPoint[i]! += await left(file, p.rev);
   }
+  const curve: CurvePoint[] = points.map((p, i) => ({ days: p.days, surviving: p.rev ? atPoint[i]! : null }));
 
-  cache?.set(key, { baseline, surviving });
-  return measured(baseline, surviving);
+  const result: Measurement = { baseline, surviving, files: fileResults, curve };
+  cache?.set(key, result);
+  return measured(result);
 }

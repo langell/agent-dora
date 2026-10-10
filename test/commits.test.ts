@@ -53,7 +53,10 @@ test('commit mode: direct commits, a branch merge, reverts and Caused-by', async
   assert.equal(b.number, null);
   assert.equal(b.authorClass, 'assisted');
   assert.equal(b.url, `https://github.com/o/r/commit/${kept}`);
-  assert.deepEqual(b.durability, { status: 'measured', baseline: 10, surviving: 10 });
+  assert.deepEqual({ ...b.durability, files: undefined, curve: undefined }, { status: 'measured', baseline: 10, surviving: 10, files: undefined, curve: undefined });
+  assert.equal(b.tool, 'Claude');
+  assert.equal(b.oid, kept);
+  assert.equal(b.reviewDepth, null);
   assert.equal(b.durable, true);
   assert.equal(b.size, 10);
 
@@ -63,7 +66,8 @@ test('commit mode: direct commits, a branch merge, reverts and Caused-by', async
 
   const m = byId.get(merge.slice(0, 7))!;
   assert.equal(m.authorClass, 'assisted', 'a merged commit with an AI trailer marks the merge assisted');
-  assert.deepEqual(m.durability, { status: 'measured', baseline: 4, surviving: 4 });
+  assert.equal(m.durability.baseline, 4);
+  assert.equal(m.durability.surviving, 4);
   assert.equal(m.leadTimeHours, 24);
 
   const f = byId.get(buggy.slice(0, 7))!;

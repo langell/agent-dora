@@ -55,7 +55,7 @@ open agent-dora-report/index.html
 Auth comes from `GITHUB_TOKEN`, `GH_TOKEN`, or your existing `gh auth login`.
 
 ```
-agent-dora [run|collect|report|classify|label] [options]
+agent-dora [run|collect|report|rollup|classify|label] [options]
 
   --repo <owner/name>   default: the origin remote
   --unit <auto|prs|commits>
@@ -66,10 +66,19 @@ agent-dora [run|collect|report|classify|label] [options]
   --window <days>       durability window (default: 21)
   --threshold <0-1>     share of added lines that must survive (default: 0.7)
   --out <dir>           report directory (default: agent-dora-report)
+  --db <file>           cache file; repeat it with rollup
   --pr <number>         for classify / label
 ```
 
-Output: `index.html` (dashboard), `metrics.json` (everything, for your own tooling) and `summary.md`.
+Output: `index.html` (dashboard), `metrics.json` (everything, for your own tooling), `summary.md` and `changes.csv` (one row per change, for spreadsheets).
+
+**Several repositories.** Run `collect` in each repository, then combine their caches into one report:
+
+```bash
+npx agent-dora rollup --db ../api/.agent-dora/cache.db --db ../web/.agent-dora/cache.db --out team-report
+```
+
+The repositories must use the same unit, window and threshold.
 
 Durability results are cached in `.agent-dora/cache.db` (SQLite). They can't change once a change matures, so later runs only measure new ones.
 
@@ -106,6 +115,16 @@ In commit mode there are no labels or PR authors: a commit is **agent** if its g
 
 Dependency bots (Dependabot, Renovate…) are excluded from all metrics. AI review bots (Copilot review, CodeRabbit…, see `botReviewers`) don't count as a first review.
 
+## What else the report shows
+
+- **By tool.** Every metric per AI tool (Claude, Copilot, Codex, Cursor, Devin…), read from whatever marked the change as AI-written. Map your own agents with `tools`.
+- **This period vs the last.** The headline metrics for the latest `compareDays` (default 28) of matured changes next to the 28 before, computed from the changes themselves, so there's no history to keep.
+- **Who fixed whom.** Reverts, rework and bugs inside the window, by the author class of the change fixed and of the change (or bug report) that fixed it.
+- **Review depth (PR mode).** How many PRs merged with no human review, or a human approval with nothing written ("rubber-stamped"), versus reviews that commented or requested changes.
+- **Hotspots.** Directories (first `hotspotDepth` segments, default 2) that lost the most added lines.
+- **Survival curve.** Share of lines left at each of `checkpointDays` (default 7 and 14) and at the end of the window. Each checkpoint adds a `git blame` per changed file; set `checkpointDays` to `[]` to skip it.
+- **How authorship was decided.** Counts per signal (label, agent account, branch prefix, trailer), so you can see how much rests on weaker signals.
+
 ## Linking fixes to the changes they fix
 
 Reverts are detected automatically: `git revert` commits, GitHub's Revert button, and PRs titled `Revert "<title>"`. For other fixes, use either of these conventions (in commit mode, reference the commit SHA instead of `#123`, e.g. `Caused-by: 1a2b3c4`):
@@ -117,7 +136,7 @@ A fix only counts against a PR if it lands within that PR's durability window.
 
 ## Configuration
 
-Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults; `labels` merges key by key.
+Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults; `labels` and `tools` merge key by key. Unknown keys print a warning, and values of the wrong type stop the run with an error.
 
 ```json
 {
@@ -127,10 +146,14 @@ Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults;
   "survivalThreshold": 0.7,
   "minSurvivalLines": 5,
   "sinceDays": 180,
+  "checkpointDays": [7, 14],
+  "compareDays": 28,
+  "hotspotDepth": 2,
   "labels": { "rework": ["hotfix", "rework", "regression", "follow-up"] },
   "agentBranchPrefixes": ["claude/", "codex/", "copilot/", "bot/"],
   "agentAuthors": ["Copilot", "claude", "my-internal-agent"],
   "assistedPatterns": ["Co-Authored-By:.*\\b(Claude|Copilot|Cursor)\\b"],
+  "tools": { "My Agent": "my-internal-agent" },
   "ignoreAuthors": ["dependabot", "renovate"],
   "botReviewers": ["copilot-pull-request-reviewer", "coderabbitai"],
   "ignoreFiles": ["**/package-lock.json", "**/generated/**"]
@@ -163,7 +186,6 @@ DORA still measures your delivery system well. What it can't tell you is whether
 
 - AI cost per durable change (Claude Code OpenTelemetry, Anthropic Admin API)
 - Deployment data (GitHub Deployments, Vercel) for true deploy-based lead time
-- Multi-repo and org-level reports
 - Escaped defects from incident trackers (Linear, Jira, PagerDuty)
 
 ## Development

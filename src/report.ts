@@ -2,8 +2,22 @@
  * Report formatting and wording shared by the markdown summary (here) and the
  * HTML dashboard (`report-html.ts`).
  */
-import { ALL_CLASSES, CLASS_KEYS, CLASS_NAMES, HOURS_PER_DAY, isoDate, MINUTES_PER_HOUR, TOOL_NAME, Unit } from './constants.js';
-import type { ClassStats, Report } from './metrics.js';
+import {
+  ALL_CLASSES,
+  CHANGE_STATUS_NAMES,
+  CLASS_KEYS,
+  CLASS_NAMES,
+  DurabilityStatus,
+  FAILURE_REASON_NAMES,
+  HOURS_PER_DAY,
+  isoDate,
+  MINUTES_PER_HOUR,
+  REVIEW_DEPTH_NAMES,
+  TOOL_NAME,
+  UNAVAILABLE_REASON_NAMES,
+  Unit,
+} from './constants.js';
+import type { ClassStats, Report, ReportedChange } from './metrics.js';
 
 /** Shown wherever a value can't be computed yet. */
 export const EMPTY_VALUE = '—';
@@ -65,6 +79,7 @@ export function rows(r: Report): Row[] {
     { label: 'Failing early', hint: `${n.count} still inside the window that were already reverted or reworked`, value: (s) => String(s.failingEarly) },
     { label: 'Lead time (p50)', hint: `First commit to ${r.unit === Unit.Prs ? 'merge' : 'landing on the branch'}`, value: (s) => duration(s.leadTimeP50Hours) },
     ...(r.unit === Unit.Prs ? [{ label: 'Time to first review (p50)', hint: 'PR opened to first review by a person other than the author (AI review bots excluded)', value: (s: ClassStats) => duration(s.reviewWaitP50Hours) }] : []),
+    ...(r.unit === Unit.Prs ? [{ label: 'Rubber-stamped', hint: 'PRs merged with no human review, or a human approval with nothing written', value: (s: ClassStats) => pct(s.rubberStampRate) }] : []),
     { label: n.size, hint: 'Lines added plus deleted, excluding ignored files', value: (s) => num(s.sizeP50, 0) },
     { label: 'Open PRs awaiting review', hint: 'Non-draft open PRs no person has reviewed yet', value: (s) => String(s.awaitingReview) },
     { label: 'Not measurable', hint: `${n.count} whose durability couldn't be measured, e.g. missing history`, value: (s) => String(s.unknown) },
@@ -79,6 +94,20 @@ export function emptyReason(r: Report): string | null {
   if (all.matured > 0) return null;
   return `Not enough history yet: ${n.plural} need ${r.windowDays} days after ${n.landing} before they count toward durability.`;
 }
+
+/** The headline metrics compared between the latest matured stretch and the one before. */
+export const COMPARED: { label: string; field: keyof ClassStats; format: (x: number | null) => string; higherIsBetter: boolean }[] = [
+  { label: 'Durable rate', field: 'durableRate', format: pct, higherIsBetter: true },
+  { label: 'Change failure rate', field: 'changeFailureRate', format: pct, higherIsBetter: false },
+  { label: 'Line churn', field: 'churn', format: pct, higherIsBetter: false },
+  { label: 'Lead time (p50)', field: 'leadTimeP50Hours', format: duration, higherIsBetter: false },
+];
+
+/** The value of a compared stat, or null if it's missing or not a number. */
+export const statValue = (s: ClassStats | undefined, field: keyof ClassStats) => {
+  const v = s?.[field];
+  return typeof v === 'number' ? v : null;
+};
 
 export function subtitle(r: Report): string {
   return `${r.branch} · counting ${nouns(r.unit).plural} · since ${isoDate(r.since)} · durability window ${r.windowDays} days · survival threshold ${pct(r.survivalThreshold)}`;
@@ -100,7 +129,65 @@ export function renderMarkdown(r: Report): string {
   ];
   const empty = emptyReason(r);
   if (empty) lines.push(`> ${empty}`, '');
+
+  const cmp = r.comparison;
+  if (cmp?.previous) {
+    lines.push(`### Last ${cmp.days} matured days vs the ${cmp.days} before`, '', `| Metric | ${CLASS_KEYS.map((k) => CLASS_NAMES[k]).join(' | ')} |`, `|---|${CLASS_KEYS.map(() => '--:').join('|')}|`);
+    for (const m of COMPARED) {
+      const cell = (k: (typeof CLASS_KEYS)[number]) => `${m.format(statValue(cmp.previous![k], m.field))} → ${m.format(statValue(cmp.current[k], m.field))}`;
+      lines.push(`| ${m.label} | ${CLASS_KEYS.map(cell).join(' | ')} |`);
+    }
+    lines.push('');
+  }
+
+  if (r.tools.length) {
+    const n = nouns(r.unit);
+    lines.push('### By tool', '', `| Tool | ${n.count} | Durable rate | Line churn | Change failure rate |`, '|---|--:|--:|--:|--:|');
+    for (const t of r.tools) lines.push(`| ${t.tool} | ${t.stats.merged} | ${pct(t.stats.durableRate)} | ${pct(t.stats.churn)} | ${pct(t.stats.changeFailureRate)} |`);
+    lines.push('');
+  }
   return lines.join('\n');
+}
+
+// ---- CSV -------------------------------------------------------------------------
+
+/** Separates several values inside one CSV cell. */
+const CSV_LIST_SEP = '; ';
+const CSV_NEEDS_QUOTES = /[",\r\n]/;
+
+const csvCell = (v: string | number | boolean | null | undefined) => {
+  const s = v === null || v === undefined ? '' : String(v);
+  return CSV_NEEDS_QUOTES.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+/** The change table's columns, for spreadsheets and other tools. */
+const CSV_COLUMNS: { header: string; value: (c: ReportedChange) => string | number | boolean | null | undefined }[] = [
+  { header: 'repo', value: (c) => c.repo },
+  { header: 'kind', value: (c) => c.kind },
+  { header: 'id', value: (c) => c.id },
+  { header: 'title', value: (c) => c.title },
+  { header: 'url', value: (c) => c.url },
+  { header: 'author', value: (c) => c.author },
+  { header: 'author_class', value: (c) => c.authorClass },
+  { header: 'tool', value: (c) => c.tool },
+  { header: 'class_source', value: (c) => c.classSource },
+  { header: 'class_reason', value: (c) => c.classReason },
+  { header: 'merged_at', value: (c) => c.mergedAt },
+  { header: 'lead_time_hours', value: (c) => c.leadTimeHours },
+  { header: 'review_wait_hours', value: (c) => c.reviewWaitHours },
+  { header: 'review_depth', value: (c) => (c.reviewDepth ? REVIEW_DEPTH_NAMES[c.reviewDepth] : null) },
+  { header: 'size', value: (c) => c.size },
+  { header: 'lines_added', value: (c) => (c.durability.status === DurabilityStatus.Measured ? c.durability.baseline : null) },
+  { header: 'lines_kept', value: (c) => (c.durability.status === DurabilityStatus.Measured ? c.durability.surviving : null) },
+  { header: 'status', value: (c) => CHANGE_STATUS_NAMES[c.status] },
+  { header: 'failure_reasons', value: (c) => c.failureReasons.map((f) => FAILURE_REASON_NAMES[f]).join(CSV_LIST_SEP) },
+  { header: 'not_measured_because', value: (c) => (c.durability.reason ? UNAVAILABLE_REASON_NAMES[c.durability.reason] : null) },
+  { header: 'rework', value: (c) => c.rework.map((e) => `${e.kind} ${e.source}`).join(CSV_LIST_SEP) },
+];
+
+export function renderCsv(r: Report): string {
+  const rows = r.changes.map((c) => CSV_COLUMNS.map((col) => csvCell(col.value(c))).join(','));
+  return [CSV_COLUMNS.map((col) => col.header).join(','), ...rows].join('\n') + '\n';
 }
 
 /** Escapes text for HTML. */

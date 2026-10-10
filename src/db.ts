@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ChangeKind, ClassSource, prId, UnavailableReason, Unit } from './constants.js';
-import type { DurabilityCache } from './durability.js';
+import type { DurabilityCache, Measurement } from './durability.js';
 import type { ChangeRecord, Snapshot } from './types.js';
 
 /** Snapshots before 0.3 stored the user-facing wording of an unavailable reason, not its code. */
@@ -12,6 +12,12 @@ const LEGACY_REASONS: Record<string, UnavailableReason> = {
   'not merged into the default branch': UnavailableReason.NotOnBranch,
   'no measurable added lines': UnavailableReason.NoMeasurableLines,
 };
+
+/**
+ * Durability measurements, as JSON. Replaces the 0.2 `durability` table, whose rows held
+ * only line counts under a narrower key; it's left alone and simply no longer read.
+ */
+const DURABILITY_TABLE = 'durability_v2';
 
 /**
  * SQLite store: the latest snapshot per repo, plus a durability cache.
@@ -26,7 +32,7 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS snapshots (repo TEXT PRIMARY KEY, collected_at TEXT NOT NULL, data TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS durability (key TEXT PRIMARY KEY, baseline INTEGER NOT NULL, surviving INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS ${DURABILITY_TABLE} (key TEXT PRIMARY KEY, data TEXT NOT NULL);
     `);
   }
 
@@ -41,38 +47,50 @@ export class Store {
     const row = repo
       ? this.db.prepare('SELECT data FROM snapshots WHERE repo = ?').get(repo)
       : this.db.prepare('SELECT data FROM snapshots ORDER BY collected_at DESC LIMIT 1').get();
-    if (!row) return null;
-    const snap = JSON.parse(String(row.data)) as Snapshot & { prs?: Omit<ChangeRecord, 'kind' | 'id' | 'classSource'>[] };
-    // Snapshots from 0.1.x stored PRs under `prs`, before commit mode existed.
-    if (snap.prs && !snap.changes) {
-      // 0.1.x didn't record which signal classified a PR; only live labelling reads it.
-      snap.changes = snap.prs.map((p) => ({ ...p, kind: ChangeKind.Pr, id: prId(p.number!), classSource: ClassSource.None }));
-      snap.branch ??= snap.defaultBranch;
-      snap.unit ??= Unit.Prs;
-      snap.notes ??= [];
-      delete snap.prs;
-    }
-    for (const c of snap.changes) {
-      c.remedial ??= false;
-      const reason = c.durability.reason as string | undefined;
-      if (reason !== undefined && reason in LEGACY_REASONS) c.durability.reason = LEGACY_REASONS[reason];
-    }
-    return snap;
+    return row ? migrate(String(row.data)) : null;
+  }
+
+  /** Every repository's latest snapshot, most recent first. */
+  loadAllSnapshots(): Snapshot[] {
+    return this.db.prepare('SELECT data FROM snapshots ORDER BY collected_at DESC').all().map((row) => migrate(String(row.data)));
   }
 
   durabilityCache(): DurabilityCache {
-    const get = this.db.prepare('SELECT baseline, surviving FROM durability WHERE key = ?');
-    const set = this.db.prepare('INSERT OR REPLACE INTO durability (key, baseline, surviving) VALUES (?, ?, ?)');
+    const get = this.db.prepare(`SELECT data FROM ${DURABILITY_TABLE} WHERE key = ?`);
+    const set = this.db.prepare(`INSERT OR REPLACE INTO ${DURABILITY_TABLE} (key, data) VALUES (?, ?)`);
     return {
       get: (key) => {
         const row = get.get(key);
-        return row ? { baseline: Number(row.baseline), surviving: Number(row.surviving) } : undefined;
+        return row ? (JSON.parse(String(row.data)) as Measurement) : undefined;
       },
-      set: (key, v) => void set.run(key, v.baseline, v.surviving),
+      set: (key, v) => void set.run(key, JSON.stringify(v)),
     };
   }
 
   close(): void {
     this.db.close();
   }
+}
+
+/** Parses a stored snapshot, filling in what older versions didn't record. */
+function migrate(data: string): Snapshot {
+  const snap = JSON.parse(data) as Snapshot & { prs?: Omit<ChangeRecord, 'kind' | 'id' | 'classSource'>[] };
+  // Snapshots from 0.1.x stored PRs under `prs`, before commit mode existed.
+  if (snap.prs && !snap.changes) {
+    // 0.1.x didn't record which signal classified a PR; only live labelling reads it.
+    snap.changes = snap.prs.map((p) => ({ ...p, kind: ChangeKind.Pr, id: prId(p.number!), classSource: ClassSource.None }));
+    snap.branch ??= snap.defaultBranch;
+    snap.unit ??= Unit.Prs;
+    snap.notes ??= [];
+    delete snap.prs;
+  }
+  for (const c of snap.changes) {
+    c.remedial ??= false;
+    c.oid ??= null;
+    c.tool ??= null;
+    c.reviewDepth ??= null;
+    const reason = c.durability?.reason as string | undefined;
+    if (reason !== undefined && reason in LEGACY_REASONS) c.durability.reason = LEGACY_REASONS[reason];
+  }
+  return snap;
 }

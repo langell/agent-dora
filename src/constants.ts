@@ -32,6 +32,18 @@ export const CLASS_NAMES: Record<ClassKey, string> = {
 /** Which signal decided a change's author class. */
 export const ClassSource = { Label: 'label', Author: 'author', Branch: 'branch', Trailer: 'trailer', None: 'none' } as const;
 export type ClassSource = ValueOf<typeof ClassSource>;
+export const CLASS_SOURCES: readonly ClassSource[] = Object.values(ClassSource);
+
+export const CLASS_SOURCE_NAMES: Record<ClassSource, string> = {
+  [ClassSource.Label]: 'Label',
+  [ClassSource.Author]: 'Agent account',
+  [ClassSource.Branch]: 'Branch prefix',
+  [ClassSource.Trailer]: 'Commit trailer or marker',
+  [ClassSource.None]: 'No AI signal',
+};
+
+/** The tool name for AI-written changes no configured tool pattern recognises. */
+export const OTHER_TOOL = 'Other';
 
 /** What counts as one change. */
 export const Unit = { Prs: 'prs', Commits: 'commits' } as const;
@@ -82,6 +94,41 @@ export const CHANGE_STATUS_NAMES: Record<ChangeStatus, string> = {
   [ChangeStatus.Remedial]: 'Fix or revert',
 };
 
+/** Why a change wasn't durable: the kinds of rework, or too many of its lines rewritten. */
+export const FailureReason = { ...ReworkKind, Churned: 'churned' } as const;
+export type FailureReason = ValueOf<typeof FailureReason>;
+
+export const FAILURE_REASON_NAMES: Record<FailureReason, string> = {
+  [FailureReason.Revert]: 'Reverted',
+  [FailureReason.Rework]: 'Reworked',
+  [FailureReason.Bug]: 'Caused a bug',
+  [FailureReason.Churned]: 'Lines rewritten',
+};
+
+/** Who fixed a change: an author class, a bug report, or a change outside the collected data. */
+export const FIXER_ISSUE = 'issue';
+export const FIXER_OUTSIDE = 'outside';
+export type FixerKey = AuthorClass | typeof FIXER_ISSUE | typeof FIXER_OUTSIDE;
+export const FIXER_KEYS: readonly FixerKey[] = [...AUTHOR_CLASSES, FIXER_ISSUE, FIXER_OUTSIDE];
+export const FIXER_NAMES: Record<FixerKey, string> = {
+  [AuthorClass.Agent]: CLASS_NAMES[AuthorClass.Agent],
+  [AuthorClass.Assisted]: CLASS_NAMES[AuthorClass.Assisted],
+  [AuthorClass.Human]: CLASS_NAMES[AuthorClass.Human],
+  [FIXER_ISSUE]: 'Bug report',
+  [FIXER_OUTSIDE]: 'Not in this data',
+};
+
+/** How closely a person reviewed a PR before it merged. */
+export const ReviewDepth = { None: 'none', Silent: 'silent', Engaged: 'engaged' } as const;
+export type ReviewDepth = ValueOf<typeof ReviewDepth>;
+export const REVIEW_DEPTHS: readonly ReviewDepth[] = Object.values(ReviewDepth);
+
+export const REVIEW_DEPTH_NAMES: Record<ReviewDepth, string> = {
+  [ReviewDepth.None]: 'No human review',
+  [ReviewDepth.Silent]: 'Approved without comment',
+  [ReviewDepth.Engaged]: 'Commented or requested changes',
+};
+
 /** GitHub's `PullRequestReviewState` values. */
 export const ReviewState = {
   Approved: 'APPROVED',
@@ -94,7 +141,7 @@ export type ReviewState = ValueOf<typeof ReviewState>;
 
 // ---- CLI --------------------------------------------------------------------
 
-export const Command = { Run: 'run', Collect: 'collect', Report: 'report', Classify: 'classify', Label: 'label', Help: 'help' } as const;
+export const Command = { Run: 'run', Collect: 'collect', Report: 'report', Rollup: 'rollup', Classify: 'classify', Label: 'label', Help: 'help' } as const;
 export type Command = ValueOf<typeof Command>;
 
 /** The repo-root config file. */
@@ -104,7 +151,7 @@ export const CACHE_DIR = `.${TOOL_NAME}`;
 export const CACHE_FILE = 'cache.db';
 export const DEFAULT_OUT_DIR = `${TOOL_NAME}-report`;
 
-export const ReportFile = { Html: 'index.html', Json: 'metrics.json', Summary: 'summary.md' } as const;
+export const ReportFile = { Html: 'index.html', Json: 'metrics.json', Summary: 'summary.md', Csv: 'changes.csv' } as const;
 
 // ---- Time -------------------------------------------------------------------
 

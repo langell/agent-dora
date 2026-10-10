@@ -1,5 +1,5 @@
 import type { Config } from './config.js';
-import { AUTHOR_CLASSES, AuthorClass, BOT_SUFFIX, ClassSource } from './constants.js';
+import { AUTHOR_CLASSES, AuthorClass, BOT_SUFFIX, ClassSource, OTHER_TOOL } from './constants.js';
 
 export interface Classifiable {
   author: string | null;
@@ -15,6 +15,27 @@ export interface Classification {
   source: ClassSource;
   /** Human-readable detail, e.g. which label or pattern matched. */
   reason: string;
+  /** The AI tool behind an agent or assisted change; null for human ones. */
+  tool: string | null;
+}
+
+/** Lines that credit a tool: co-author trailers and "Generated with ..." footers. */
+const CREDIT_LINE = /^.*(?:co-authored-by:|generated with).*$/gim;
+
+/**
+ * Names the AI tool in `evidence` (what marked the change as AI-written), falling back
+ * to the author, branch and credit lines (not free text, where "cursor" may mean
+ * pagination), then to `OTHER_TOOL`.
+ */
+export function detectTool(evidence: string, pr: Classifiable, cfg: Config): string {
+  const tools = Object.entries(cfg.tools).map(([name, p]) => ({ name, re: new RegExp(p, 'i') }));
+  const credits = [pr.body, ...pr.commits.map((c) => c.message)].flatMap((t) => t.match(CREDIT_LINE) ?? []);
+  const texts = [evidence, pr.author ?? '', pr.headRefName, ...credits];
+  for (const text of texts) {
+    const hit = tools.find((t) => t.re.test(text));
+    if (hit) return hit.name;
+  }
+  return OTHER_TOOL;
 }
 
 /** Lowercased login without GitHub's bot suffix, so `claude[bot]` matches `claude`. */
@@ -61,19 +82,28 @@ export function classify(pr: Classifiable, cfg: Config): Classification {
     const hit = cfg.labels[cls].find((l) => labels.has(l.toLowerCase()));
     return hit ? [{ cls, hit }] : [];
   });
-  if (hits.length === 1) return { authorClass: hits[0]!.cls, source: ClassSource.Label, reason: `label ${hits[0]!.hit}` };
+  // Which tool, for AI-written changes, is read from the evidence that decided the class.
+  const toolFor = (authorClass: AuthorClass, evidence: string) => (authorClass === AuthorClass.Human ? null : detectTool(evidence, pr, cfg));
+  if (hits.length === 1) {
+    const { cls, hit } = hits[0]!;
+    return { authorClass: cls, source: ClassSource.Label, reason: `label ${hit}`, tool: toolFor(cls, '') };
+  }
   const note = hits.length > 1 ? `; ignored conflicting labels ${hits.map((h) => h.hit).join(', ')}` : '';
-  const decided = (authorClass: AuthorClass, source: ClassSource, reason: string): Classification => ({ authorClass, source, reason: reason + note });
+  const decided = (authorClass: AuthorClass, source: ClassSource, reason: string, evidence: string): Classification =>
+    ({ authorClass, source, reason: reason + note, tool: toolFor(authorClass, evidence) });
 
-  if (pr.author && inList(pr.author, cfg.agentAuthors)) return decided(AuthorClass.Agent, ClassSource.Author, `author ${pr.author}`);
+  if (pr.author && inList(pr.author, cfg.agentAuthors)) return decided(AuthorClass.Agent, ClassSource.Author, `author ${pr.author}`, pr.author);
   const prefix = cfg.agentBranchPrefixes.find((p) => pr.headRefName.startsWith(p));
-  if (prefix) return decided(AuthorClass.Agent, ClassSource.Branch, `branch ${prefix}*`);
+  if (prefix) return decided(AuthorClass.Agent, ClassSource.Branch, `branch ${prefix}*`, prefix);
 
   const patterns = cfg.assistedPatterns.map((p) => new RegExp(p, 'im'));
   const texts = [pr.body, ...pr.commits.map((c) => c.message)];
   for (const re of patterns) {
-    if (texts.some((t) => re.test(t))) return decided(AuthorClass.Assisted, ClassSource.Trailer, `matched /${re.source}/`);
+    for (const t of texts) {
+      const m = re.exec(t);
+      if (m) return decided(AuthorClass.Assisted, ClassSource.Trailer, `matched /${re.source}/`, m[0]);
+    }
   }
 
-  return decided(AuthorClass.Human, ClassSource.None, 'no AI signal');
+  return decided(AuthorClass.Human, ClassSource.None, 'no AI signal', '');
 }

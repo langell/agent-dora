@@ -34,7 +34,7 @@ test('classify: labels win, then agent author/branch, then assisted trailers', (
   assert.equal(classify(pr({ number: 5, body: '🤖 Generated with [Claude Code](https://claude.com/claude-code)' }), cfg).authorClass, 'assisted');
   assert.equal(classify(pr({ number: 6 }), cfg).authorClass, 'human');
   const labelled = classify(pr({ number: 7, author: 'Copilot', labels: ['AI:None'] }), cfg);
-  assert.deepEqual(labelled, { authorClass: 'human', source: 'label', reason: 'label ai:none' });
+  assert.deepEqual(labelled, { authorClass: 'human', source: 'label', reason: 'label ai:none', tool: null });
   assert.equal(classify(pr({ number: 8, commits: [{ oid: 'x', message: 'Co-authored-by: Bob <bob@x.com>', authoredDate: '' }] }), cfg).authorClass, 'human');
 });
 
@@ -80,7 +80,7 @@ test('time to first review skips bot reviews', () => {
     number: 1, createdAt: '2026-01-01T00:00:00Z', mergedAt: '2026-01-03T00:00:00Z',
     reviews: [review('copilot-pull-request-reviewer', '2026-01-01T00:05:00Z', { isBot: true }), review('bob', '2026-01-02T00:00:00Z')],
   });
-  const rec = buildPrRecord(raw, { authorClass: 'human', source: ClassSource.None, reason: '' }, [], { status: 'pending', baseline: 0, surviving: 0 }, cfg);
+  const rec = buildPrRecord(raw, { authorClass: 'human', source: ClassSource.None, reason: '', tool: null }, [], { status: 'pending', baseline: 0, surviving: 0 }, cfg);
   assert.equal(rec.firstReviewAt, '2026-01-02T00:00:00.000Z');
   assert.equal(rec.reviewWaitHours, 24);
 });
@@ -185,7 +185,7 @@ function snapshot(): Snapshot {
     const createdAt = new Date(now - daysAgo * DAY - 2 * DAY).toISOString();
     const raw = pr({ number: n, mergedAt, createdAt, commits: [{ oid: `c${n}`, message: 'x', authoredDate: createdAt }], reviews: [review('bob', new Date(now - daysAgo * DAY - DAY).toISOString())] });
     const d = daysAgo > 21 ? { status: 'measured' as const, baseline: 10, surviving } : { status: 'pending' as const, baseline: 0, surviving: 0 };
-    return buildPrRecord(raw, { authorClass: cls, source: ClassSource.None, reason: 'test' }, [], d, cfg);
+    return buildPrRecord(raw, { authorClass: cls, source: ClassSource.None, reason: 'test', tool: cls === 'human' ? null : 'Claude' }, [], d, cfg);
   };
   return {
     repo: 'o/r', defaultBranch: 'main', branch: 'main', unit: 'prs', notes: [], collectedAt: new Date(now).toISOString(), since, windowDays: 21, survivalThreshold: 0.7,
@@ -219,13 +219,13 @@ test('early failures, fixes and reverts are kept out of rates', () => {
   const now = Date.parse(snap.collectedAt);
   const failedEarly = buildPrRecord(
     pr({ number: 20, mergedAt: new Date(now - 3 * DAY).toISOString(), createdAt: new Date(now - 4 * DAY).toISOString() }),
-    { authorClass: 'agent', source: ClassSource.None, reason: '' },
+    { authorClass: 'agent', source: ClassSource.None, reason: '', tool: null },
     [{ target: 20, kind: 'revert', at: new Date(now - 2 * DAY).toISOString(), source: '#21' }],
     { status: 'pending', baseline: 0, surviving: 0 }, cfg,
   );
   const revertPr = buildPrRecord(
     pr({ number: 21, mergedAt: new Date(now - 30 * DAY).toISOString() }),
-    { authorClass: 'human', source: ClassSource.None, reason: '' }, [],
+    { authorClass: 'human', source: ClassSource.None, reason: '', tool: null }, [],
     { status: 'unavailable', baseline: 0, surviving: 0, reason: UnavailableReason.NoMeasurableLines }, cfg, { remedial: true },
   );
   assert.equal(failedEarly.durable, false);

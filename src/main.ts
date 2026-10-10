@@ -21,7 +21,9 @@ import { remoteRepo } from './git.js';
 import { GitHub, resolveToken } from './github.js';
 import { aggregate } from './metrics.js';
 import { renderHtml } from './report-html.js';
-import { nouns, renderMarkdown } from './report.js';
+import { nouns, renderCsv, renderMarkdown } from './report.js';
+import { combineSnapshots } from './rollup.js';
+import type { Snapshot } from './types.js';
 
 const unitChoices = Object.values(UnitSetting).join('|');
 
@@ -33,13 +35,15 @@ Commands:
   ${Command.Run.padEnd(10)} Collect, then write the report (default)
   ${Command.Collect.padEnd(10)} Fetch changes and measure durability from local git history
   ${Command.Report.padEnd(10)} Write the dashboard from the last collected snapshot
+  ${Command.Rollup.padEnd(10)} Write one dashboard for every repository in the given --db caches
   ${Command.Classify.padEnd(10)} Print how a PR is classified (${AUTHOR_CLASSES.join(', ')})
   ${Command.Label.padEnd(10)} Classify a PR and apply the matching label on GitHub
 
 Options:
   --repo <owner/name>   GitHub repository (default: the ${GIT_REMOTE} remote)
   --path <dir>          Local clone with full history (default: .)
-  --db <file>           SQLite cache (default: <path>/${CACHE_DIR}/${CACHE_FILE})
+  --db <file>           SQLite cache (default: <path>/${CACHE_DIR}/${CACHE_FILE}).
+                        Repeat it with ${Command.Rollup} to combine several repositories
   --out <dir>           Report output directory (default: ${DEFAULT_OUT_DIR})
   --unit <${unitChoices}>
                         What counts as a change: merged PRs, or commits on the
@@ -62,7 +66,7 @@ export async function main(argv: string[]): Promise<void> {
     options: {
       repo: { type: 'string' },
       path: { type: 'string', default: '.' },
-      db: { type: 'string' },
+      db: { type: 'string', multiple: true },
       out: { type: 'string', default: DEFAULT_OUT_DIR },
       since: { type: 'string' },
       unit: { type: 'string' },
@@ -86,9 +90,11 @@ export async function main(argv: string[]): Promise<void> {
   if (values.since) overrides.sinceDays = positiveNumber('--since', values.since);
   if (values.window) overrides.windowDays = positiveNumber('--window', values.window);
   if (values.threshold) overrides.survivalThreshold = positiveNumber('--threshold', values.threshold);
-  const cfg = loadConfig(repoPath, overrides);
-  const dbPath = resolve(values.db ?? join(repoPath, CACHE_DIR, CACHE_FILE));
   const log = (msg: string) => console.error(msg);
+  const cfg = loadConfig(repoPath, overrides, (msg) => log(`Warning: ${msg}`));
+  const dbPaths = values.db?.length ? values.db.map((p) => resolve(p)) : [resolve(join(repoPath, CACHE_DIR, CACHE_FILE))];
+  const dbPath = dbPaths[0]!;
+  const outDir = resolve(values.out!);
 
   const github = async () => {
     const repo = values.repo ?? (await remoteRepo(repoPath));
@@ -103,10 +109,17 @@ export async function main(argv: string[]): Promise<void> {
       return withStore(dbPath, async (store) => {
         const snap = await collect({ repoPath, gh: await github(), cfg, store, log });
         log(`Collected ${snap.changes.length} ${nouns(snap.unit).plural} on ${snap.branch}, and ${snap.openPrs.length} open PRs.`);
-        if (command === Command.Run) writeReport(store, snap.repo, resolve(values.out!), log);
+        if (command === Command.Run) writeReport(loaded(store.loadSnapshot(snap.repo)), cfg, outDir, log);
       });
     case Command.Report:
-      return withStore(dbPath, (store) => writeReport(store, values.repo, resolve(values.out!), log));
+      return withStore(dbPath, (store) => writeReport(loaded(store.loadSnapshot(values.repo)), cfg, outDir, log));
+    case Command.Rollup: {
+      const snaps: Snapshot[] = [];
+      for (const path of dbPaths) await withStore(path, (store) => void snaps.push(...store.loadAllSnapshots()));
+      const combined = combineSnapshots(snaps);
+      log(`Combining ${combined.repos?.length ?? 1} repositories: ${(combined.repos ?? [combined.repo]).join(', ')}`);
+      return writeReport(combined, cfg, outDir, log);
+    }
     case Command.Classify:
     case Command.Label: {
       const number = Number(values.pr);
@@ -125,7 +138,7 @@ export async function main(argv: string[]): Promise<void> {
           await gh.setLabel(number, cfg.labels[cls.authorClass][0] ?? CLASS_LABELS[cls.authorClass], family);
         }
       }
-      console.log(JSON.stringify({ number, authorClass: cls.authorClass, source: cls.source, reason: cls.reason }));
+      console.log(JSON.stringify({ number, authorClass: cls.authorClass, tool: cls.tool, source: cls.source, reason: cls.reason }));
       return;
     }
     default:
@@ -149,15 +162,19 @@ function positiveNumber(flag: string, raw: string): number {
   return n;
 }
 
-function writeReport(store: Store, repo: string | undefined, outDir: string, log: (m: string) => void): void {
-  const snap = store.loadSnapshot(repo);
+function loaded(snap: Snapshot | null): Snapshot {
   if (!snap) throw new Error(`No collected data yet. Run \`${TOOL_NAME} ${Command.Collect}\` first.`);
-  const report = aggregate(snap);
+  return snap;
+}
+
+function writeReport(snap: Snapshot, cfg: Config, outDir: string, log: (m: string) => void): void {
+  const report = aggregate(snap, new Date(snap.collectedAt), { compareDays: cfg.compareDays, hotspotDepth: cfg.hotspotDepth });
   const summary = renderMarkdown(report);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, ReportFile.Html), renderHtml(report));
   writeFileSync(join(outDir, ReportFile.Json), JSON.stringify(report, null, 2));
   writeFileSync(join(outDir, ReportFile.Summary), summary);
+  writeFileSync(join(outDir, ReportFile.Csv), renderCsv(report));
   // Inside GitHub Actions, publish the summary and report location directly,
   // so the action doesn't need to know our file names.
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);

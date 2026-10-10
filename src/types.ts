@@ -1,4 +1,4 @@
-import type { AuthorClass, ChangeKind, ClassSource, DurabilityStatus, ReviewState, ReworkKind, ReworkSourceKind, UnavailableReason, Unit } from './constants.js';
+import type { AuthorClass, ChangeKind, ClassSource, DurabilityStatus, ReviewDepth, ReviewState, ReworkKind, ReworkSourceKind, UnavailableReason, Unit } from './constants.js';
 
 export type { AuthorClass, ClassKey, ReworkKind, Unit } from './constants.js';
 
@@ -65,6 +65,21 @@ export interface ReworkEvent {
   source: string;
 }
 
+/** One file's share of a measured change. */
+export interface FileSurvival {
+  /** Path at the time the change landed. */
+  path: string;
+  baseline: number;
+  surviving: number;
+}
+
+/** How many of a change's lines were left some days after it landed. */
+export interface CurvePoint {
+  days: number;
+  /** null when the branch history doesn't reach that day. */
+  surviving: number | null;
+}
+
 export interface Durability {
   status: DurabilityStatus;
   /** Lines the PR added, as attributed by `git blame` at the merge commit. */
@@ -72,6 +87,10 @@ export interface Durability {
   /** Of those lines, how many are still attributed to the PR at merge + window. */
   surviving: number;
   reason?: UnavailableReason;
+  /** Per-file breakdown of a measured change. */
+  files?: FileSurvival[];
+  /** Survival at each of the configured checkpoints before the window ends. */
+  curve?: CurvePoint[];
 }
 
 export interface ChangeRecord {
@@ -80,12 +99,18 @@ export interface ChangeRecord {
   id: string;
   /** PR number; null for commits. */
   number: number | null;
+  /** The commit that landed the change (a PR's merge commit), if known. */
+  oid: string | null;
+  /** `owner/name`, set when changes from several repositories are combined. */
+  repo?: string;
   title: string;
   url: string;
   author: string | null;
   authorClass: AuthorClass;
   classSource: ClassSource;
   classReason: string;
+  /** The AI tool behind an agent or assisted change ("Claude", "Copilot"...); null for human ones. */
+  tool: string | null;
   createdAt: string;
   mergedAt: string;
   firstCommitAt: string | null;
@@ -93,6 +118,8 @@ export interface ChangeRecord {
   firstReviewAt: string | null;
   leadTimeHours: number | null;
   reviewWaitHours: number | null;
+  /** How closely a person reviewed the PR; null in commit mode. */
+  reviewDepth: ReviewDepth | null;
   size: number;
   rework: ReworkEvent[];
   durability: Durability;
@@ -106,6 +133,8 @@ export interface ChangeRecord {
 }
 
 export interface OpenPrRecord {
+  /** `owner/name`, set when changes from several repositories are combined. */
+  repo?: string;
   number: number;
   title: string;
   url: string;
@@ -124,6 +153,10 @@ export interface Snapshot {
   since: string;
   windowDays: number;
   survivalThreshold: number;
+  /** Missing in snapshots from before 0.3, which used the default. */
+  minSurvivalLines?: number;
+  /** The repositories combined into this snapshot by `rollup`. */
+  repos?: string[];
   changes: ChangeRecord[];
   openPrs: OpenPrRecord[];
   /** Things the reader should know about how this data was collected. */

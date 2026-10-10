@@ -6,6 +6,9 @@ import { diffSize } from '../src/git.js';
 import { durabilityKey, measureDurability, prLines, type PrCommits } from '../src/durability.js';
 import { DAY, lines, T0, TempRepo } from './helpers.js';
 
+/** The headline fields of a measurement, without the per-file and curve detail. */
+const core = (d: { status: string; baseline: number; surviving: number }) => ({ status: d.status, baseline: d.baseline, surviving: d.surviving });
+
 /** Measures a PR merged as `oid`, the way PR mode does. */
 const measurePr = (dir: string, oid: string, landedAt: string, pr: PrCommits, now: Date, cache?: Parameters<typeof measureDurability>[6]) =>
   measureDurability(dir, 'main', { kind: 'pr', oid, landedAt }, (o) => prLines(dir, pr, o), DEFAULT_CONFIG, now, cache);
@@ -53,10 +56,16 @@ test('measures line survival across squash, merge-commit and rebase merges', asy
   const measure = (oid: string, mergedAt: string, messages: string[]) =>
     measurePr(r.dir, oid, mergedAt, { commitCount: messages.length, commits: messages.map((message) => ({ message })) }, now);
 
-  assert.deepEqual(await measure(squash, at(1), ['wip', 'more']), { status: 'measured', baseline: 10, surviving: 5 });
-  assert.deepEqual(await measure(renamed, at(1), ['add c']), { status: 'measured', baseline: 10, surviving: 10 });
-  assert.deepEqual(await measure(mergeCommit, at(2), ['e part 1', 'e part 2']), { status: 'measured', baseline: 4, surviving: 4 });
-  assert.deepEqual(await measure(rebased, at(3), ['feat: f one', 'feat: f two']), { status: 'measured', baseline: 6, surviving: 6 });
+  const squashed = await measure(squash, at(1), ['wip', 'more']);
+  assert.deepEqual(core(squashed), { status: 'measured', baseline: 10, surviving: 5 });
+  assert.deepEqual(squashed.files, [{ path: 'b.txt', baseline: 10, surviving: 5 }]);
+  // The rewrite on day 6 comes before both checkpoints (days 8 and 15).
+  assert.deepEqual(squashed.curve, [{ days: 7, surviving: 5 }, { days: 14, surviving: 5 }]);
+  assert.deepEqual(core(await measure(renamed, at(1), ['add c'])), { status: 'measured', baseline: 10, surviving: 10 });
+  assert.deepEqual(core(await measure(mergeCommit, at(2), ['e part 1', 'e part 2'])), { status: 'measured', baseline: 4, surviving: 4 });
+  const rebasedResult = await measure(rebased, at(3), ['feat: f one', 'feat: f two']);
+  assert.deepEqual(core(rebasedResult), { status: 'measured', baseline: 6, surviving: 6 });
+  assert.deepEqual(rebasedResult.files!.map((f) => f.path).sort(), ['f.txt', 'g.txt']);
   assert.equal((await measure(recent, at(28), ['x'])).status, 'pending');
   assert.equal((await measure('0'.repeat(40), at(1), ['x'])).status, 'unavailable');
 });
@@ -74,9 +83,23 @@ test('uses the cache instead of re-running blame', async () => {
   const noLookup = await measureDurability(r.dir, 'main', { kind: 'pr', oid, landedAt: new Date(T0).toISOString() }, () => assert.fail('looked up lines'), DEFAULT_CONFIG, new Date(T0 + 40 * DAY), cache);
   assert.equal(noLookup.status, 'measured');
   const d = await measurePr(r.dir, oid, new Date(T0).toISOString(), { commitCount: 1, commits: [{ message: 'a' }] }, new Date(T0 + 40 * DAY), cache);
-  assert.deepEqual(d, { status: 'measured', baseline: 7, surviving: 3 });
+  assert.deepEqual(core(d), { status: 'measured', baseline: 7, surviving: 3 });
   const key = durabilityKey(oid, 'pr', 'main', DEFAULT_CONFIG);
   assert.deepEqual(hits, [key, key]);
+});
+
+test('the survival curve shows lines lost between checkpoints', async () => {
+  const r = new TempRepo();
+  r.write('README.md', ['hi']);
+  r.commit(T0, 'init');
+  r.write('a.txt', lines('a', 10));
+  const oid = r.commit(T0 + DAY, 'add a');
+  // Day 1 + 10: rewrite 4 lines (after the 7-day checkpoint, before the 14-day one).
+  r.write('a.txt', [...lines('x', 4), ...lines('a', 10).slice(4)]);
+  r.commit(T0 + 11 * DAY, 'rewrite some');
+  const d = await measurePr(r.dir, oid, new Date(T0 + DAY).toISOString(), { commitCount: 1, commits: [{ message: 'add a' }] }, new Date(T0 + 40 * DAY));
+  assert.deepEqual(d.curve, [{ days: 7, surviving: 10 }, { days: 14, surviving: 6 }]);
+  assert.equal(d.surviving, 6);
 });
 
 test('cache keys separate change kinds, branches and ignored files', () => {
@@ -86,6 +109,7 @@ test('cache keys separate change kinds, branches and ignored files', () => {
   assert.notEqual(key, durabilityKey('abc', 'pr', 'origin/release', DEFAULT_CONFIG));
   assert.notEqual(key, durabilityKey('abc', 'pr', 'main', { ...DEFAULT_CONFIG, ignoreFiles: [] }));
   assert.notEqual(key, durabilityKey('abc', 'pr', 'main', { ...DEFAULT_CONFIG, windowDays: 14 }));
+  assert.notEqual(key, durabilityKey('abc', 'pr', 'main', { ...DEFAULT_CONFIG, checkpointDays: [3] }));
 });
 
 test('lines moved within a file still count as surviving', async () => {
@@ -99,7 +123,7 @@ test('lines moved within a file still count as surviving', async () => {
   r.write('src/a.js', [...block('beta'), ...block('alpha')]);
   r.commit(T0 + 3 * DAY, 'reorder');
   const d = await measurePr(r.dir, oid, new Date(T0 + DAY).toISOString(), { commitCount: 1, commits: [{ message: 'add a' }] }, new Date(T0 + 40 * DAY));
-  assert.deepEqual(d, { status: 'measured', baseline: 8, surviving: 8 });
+  assert.deepEqual(core(d), { status: 'measured', baseline: 8, surviving: 8 });
 });
 
 test('ignores lockfiles and generated files', async () => {
@@ -110,7 +134,7 @@ test('ignores lockfiles and generated files', async () => {
   r.write('src/app.ts', lines('app', 2));
   const oid = r.commit(T0 + DAY, 'deps');
   const d = await measurePr(r.dir, oid, new Date(T0 + DAY).toISOString(), { commitCount: 1, commits: [{ message: 'deps' }] }, new Date(T0 + 40 * DAY));
-  assert.deepEqual(d, { status: 'measured', baseline: 2, surviving: 2 });
+  assert.deepEqual(core(d), { status: 'measured', baseline: 2, surviving: 2 });
   assert.equal(await diffSize(r.dir, `${oid}~1`, oid), 52);
   assert.equal(await diffSize(r.dir, `${oid}~1`, oid, fileMatcher(DEFAULT_CONFIG.ignoreFiles)), 2, 'size skips ignored files too');
 });

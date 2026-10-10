@@ -78,6 +78,7 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
     since: since.toISOString(),
     windowDays: cfg.windowDays,
     survivalThreshold: cfg.survivalThreshold,
+    minSurvivalLines: cfg.minSurvivalLines,
     changes,
     openPrs,
     notes,
