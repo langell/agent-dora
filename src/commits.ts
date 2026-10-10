@@ -16,7 +16,7 @@ import { GIT_CONCURRENCY, mapLimit, progress } from './util.js';
  */
 export async function commitChanges(
   commits: g.BranchCommit[],
-  { repoPath, ref, repo, since, cfg, now, bugIssues, cache, log = () => {} }: ModeOptions,
+  { repoPath, ref, repo, since, cfg, now, reports, cache, log = () => {} }: ModeOptions,
 ): Promise<ChangeRecord[]> {
   const units = await mapLimit(commits, GIT_CONCURRENCY, async (c) => {
     const merged = c.parents.length >= 2 ? await g.commitsIn(repoPath, `${c.parents[0]}..${c.parents[1]}`) : [];
@@ -26,11 +26,11 @@ export async function commitChanges(
   const reverts = await g.revertCommits(repoPath, ref, since);
   const resolve = await g.expandOids(repoPath, [
     ...reverts.flatMap((r) => r.reverts),
-    ...causedByShas([...commits.map((c) => c.message), ...bugIssues.map((i) => `${i.title}\n${i.body}`)]),
+    ...causedByShas([...commits.map((c) => c.message), ...reports.map((r) => r.text)]),
   ]);
   const rework = findCommitRework(
     units.map((u) => ({ oid: u.c.oid, committedAt: u.c.committedAt, message: u.c.message, owners: u.owners })),
-    bugIssues,
+    reports,
     reverts,
     resolve,
   );
@@ -67,6 +67,8 @@ export async function commitChanges(
       createdAt: new Date(firstCommit).toISOString(),
       mergedAt: c.committedAt,
       firstCommitAt: new Date(firstCommit).toISOString(),
+      deployedAt: null,
+      deployLeadTimeHours: null,
       firstReviewAt: null,
       leadTimeHours: Math.max(0, (Date.parse(c.committedAt) - firstCommit) / MS_PER_HOUR),
       reviewWaitHours: null,

@@ -32,7 +32,7 @@ function change(n: number, over: Partial<ChangeRecord> = {}): ChangeRecord {
   return {
     kind: 'pr', id: `#${n}`, number: n, oid: `oid${n}`, title: `Change ${n}`, url: `https://x/${n}`, author: 'a',
     authorClass: 'human', classSource: 'none', classReason: '', tool: null,
-    createdAt: ago(61), mergedAt: ago(60), firstCommitAt: ago(61), firstReviewAt: null, leadTimeHours: 24, reviewWaitHours: null,
+    createdAt: ago(61), mergedAt: ago(60), firstCommitAt: ago(61), deployedAt: null, deployLeadTimeHours: null, firstReviewAt: null, leadTimeHours: 24, reviewWaitHours: null,
     reviewDepth: 'engaged', size: 10, rework: [],
     durability: { status: 'measured', baseline: 10, surviving: 10, files: [{ path: 'src/a/x.ts', baseline: 10, surviving: 10 }], curve: [{ days: 7, surviving: 10 }, { days: 14, surviving: 10 }] },
     durable: true, remedial: false, ...over,
@@ -67,7 +67,7 @@ test('config: unknown keys warn, wrong types and bad regexes fail', () => {
   const warnings: string[] = [];
   write({ windowDay: 14, labels: { rework: ['oops'], bugz: ['x'] }, tools: { Acme: 'acme' } });
   const c = loadConfig(dir, {}, (m) => warnings.push(m));
-  assert.deepEqual(warnings, ['.agent-dora.json: unknown key "windowDay" has no effect', '.agent-dora.json: unknown label group "bugz" has no effect']);
+  assert.deepEqual(warnings, ['.agent-dora.json: unknown key "windowDay" has no effect', '.agent-dora.json: unknown key "labels.bugz" has no effect']);
   assert.equal(c.tools.Acme, 'acme');
   assert.equal(c.tools.Claude, cfg.tools.Claude, 'tools merge key by key');
   write({ windowDays: '14' });
@@ -78,6 +78,17 @@ test('config: unknown keys warn, wrong types and bad regexes fail', () => {
   assert.throws(() => loadConfig(dir), /assistedPatterns\[0\] is not a valid regex/);
   write({ checkpointDays: [7, 0] });
   assert.throws(() => loadConfig(dir), /checkpointDays must be positive/);
+  write({ deployments: { environment: 'prod', vercelProject: 'x' }, incidents: { linearTeams: ['ENG'] } });
+  warnings.length = 0;
+  const nested = loadConfig(dir, {}, (m) => warnings.push(m));
+  assert.equal(nested.deployments.environment, 'prod');
+  assert.equal(nested.deployments.source, 'auto', 'nested sections merge key by key');
+  assert.deepEqual(nested.incidents.linearTeams, ['ENG']);
+  assert.deepEqual(warnings, ['.agent-dora.json: unknown key "deployments.vercelProject" has no effect']);
+  write({ incidents: { attributionHours: '24' } });
+  assert.throws(() => loadConfig(dir), /"incidents.attributionHours" must be a number/);
+  write({ deployments: { source: 'netlify' } });
+  assert.throws(() => loadConfig(dir), /deployments.source must be one of/);
   write([1, 2]);
   assert.throws(() => loadConfig(dir), /must hold a JSON object/);
 });

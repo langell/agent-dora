@@ -11,6 +11,9 @@ import {
   FAILURE_REASON_NAMES,
   FIXER_KEYS,
   FIXER_NAMES,
+  INCIDENT_SOURCE_NAMES,
+  incidentKey,
+  ReworkSourceKind,
   DAYS_PER_WEEK,
   HOURS_PER_DAY,
   ISO_DATE_LENGTH,
@@ -30,7 +33,7 @@ import {
 import type { ClassStats, Report } from './metrics.js';
 import { CLIENT_JS } from './report-client.js';
 import { cssVars, seriesVar, STYLES } from './report-theme.js';
-import { COMPARED, CSV_HEADER, csvRow, duration, EMPTY_VALUE, emptyReason, esc, nouns, num, pct, rows, statValue, subtitle } from './report.js';
+import { COMPARED, CSV_HEADER, csvRow, duration, EMPTY_VALUE, emptyReason, esc, nouns, num, pct, rows, statValue, subtitle, usd } from './report.js';
 
 /** The dashboard's change table renders at most this many rows. */
 const MAX_TABLE_ROWS = 500;
@@ -41,6 +44,11 @@ const MAX_SCATTER_POINTS = 2000;
 const MIN_SAMPLE = 10;
 /** Percentage points in a share; a change of a rate is shown in points. */
 const POINTS = 100;
+/** The delivery card lists at most this many recent incidents. */
+const MAX_INCIDENT_ROWS = 15;
+/** Geometry of the delivery card's weekly deploy columns, in viewBox units. */
+const DEPLOY_CHART = { width: 720, height: 120, gap: 2, labelHeight: 14, marker: 3 };
+
 /** Lead-time axis ticks, in hours: an hour, a day, a week, four weeks. */
 const LEAD_TIME_TICKS_HOURS = [1, HOURS_PER_DAY, DAYS_PER_WEEK * HOURS_PER_DAY, 4 * DAYS_PER_WEEK * HOURS_PER_DAY];
 
@@ -137,6 +145,8 @@ function tiles(r: Report): string {
   ${tile('Durable rate', pct(a.durableRate), `matured ${n.plural} that held up`, delta(r, 'durableRate', true, false))}
   ${tile('Change failure rate', pct(a.changeFailureRate), a.failingEarly ? `${a.failingEarly} more failing early` : 'reverted, reworked or caused a bug', delta(r, 'changeFailureRate', false, false))}
   ${tile('Line churn', pct(a.churn), `added lines gone after ${r.windowDays} days`, delta(r, 'churn', false, false))}
+  ${r.delivery?.deploySource ? tile('Lead time to production', duration(a.deployLeadTimeP50Hours), `first commit to live, median · ${num(r.delivery.deploysPerWeek)} deploys a week`) : ''}
+  ${r.cost ? tile('AI spend / durable change', usd(r.cost.perDurableChange), `${usd(r.cost.usd)} over ${r.cost.durable} durable AI-written ${n.plural}`) : ''}
   ${r.unit === Unit.Prs ? tile('Rubber-stamped', pct(a.rubberStampRate), 'PRs merged with no human review or a silent approval', delta(r, 'rubberStampRate', false, false)) : ''}
   ${tile('Awaiting review', String(a.awaitingReview), a.awaitingReviewAgeP50Hours === null ? 'open PRs no person has reviewed' : `median wait ${duration(a.awaitingReviewAgeP50Hours)}`)}
 </div>`;
@@ -163,6 +173,7 @@ function comparisonCard(r: Report): string {
 function toolsCard(r: Report): string {
   if (!r.tools.length) return '';
   const n = nouns(r.unit);
+  const cost = new Map((r.cost?.byTool ?? []).map((t) => [t.tool, t]));
   const body = r.tools.map((t) => [
     esc(t.tool),
     String(t.stats.merged),
@@ -171,9 +182,109 @@ function toolsCard(r: Report): string {
     pct(t.stats.changeFailureRate),
     duration(t.stats.leadTimeP50Hours),
     ...(r.unit === Unit.Prs ? [pct(t.stats.rubberStampRate)] : []),
+    ...(r.cost ? [usd(cost.get(t.tool)?.usd ?? null), usd(cost.get(t.tool)?.perDurableChange ?? null)] : []),
   ]);
-  const head = ['Tool', n.count, 'Durable rate', 'Line churn', 'Change failure rate', 'Lead time (p50)', ...(r.unit === Unit.Prs ? ['Rubber-stamped'] : [])];
+  const head = [
+    'Tool', n.count, 'Durable rate', 'Line churn', 'Change failure rate', 'Lead time (p50)',
+    ...(r.unit === Unit.Prs ? ['Rubber-stamped'] : []),
+    ...(r.cost ? ['AI spend', 'Per durable change'] : []),
+  ];
   return card('By tool', 'The AI tool behind agent and assisted changes, read from the agent account, branch prefix or co-author trailer.', table(head, body));
+}
+
+/** A row of labelled figures inside a card. */
+const figures = (items: [string, string, string?][]) =>
+  `<div class="figures">${items.map(([label, value, sub]) => `<div><div class="tile-label">${esc(label)}</div><div class="figure">${esc(value)}</div>${sub ? `<div class="tile-sub">${esc(sub)}</div>` : ''}</div>`).join('')}</div>`;
+
+/** Weekly production deploys as columns, with a mark over weeks that had incidents. Native tooltips. */
+function deployColumns(r: Report): string {
+  const weeks = r.weeks;
+  if (!weeks.length) return '';
+  const { width, height, gap, labelHeight, marker } = DEPLOY_CHART;
+  const plot = height - labelHeight - marker * 3;
+  const max = Math.max(1, ...weeks.map((w) => w.deploys));
+  const slot = width / weeks.length;
+  const bars = weeks.map((w, i) => {
+    const h = (w.deploys / max) * plot;
+    const x = i * slot + gap / 2;
+    const tip = `Week of ${w.week}: ${w.deploys} deploys${w.incidents ? `, ${w.incidents} incidents` : ''}`;
+    const mark = w.incidents ? `<circle cx="${x + (slot - gap) / 2}" cy="${marker * 1.5}" r="${marker}" class="incident-mark"/>` : '';
+    return `<g><title>${esc(tip)}</title><rect x="${x}" y="${height - labelHeight - h}" width="${Math.max(1, slot - gap)}" height="${h}" rx="2" class="deploy-bar"/>${mark}<rect x="${i * slot}" y="0" width="${slot}" height="${height}" fill="transparent"/></g>`;
+  });
+  const first = weeks[0]!.week, last = weeks.at(-1)!.week;
+  return `<svg class="deploys" viewBox="0 0 ${width} ${height}" role="img" aria-label="Production deploys per week">${bars.join('')}<text x="0" y="${height - 2}">${first}</text><text x="${width}" y="${height - 2}" text-anchor="end">${last}</text></svg>`;
+}
+
+function deliveryCard(r: Report): string {
+  const d = r.delivery;
+  if (!d) return '';
+  const n = nouns(r.unit);
+  const items: [string, string, string?][] = [];
+  if (d.deploySource) {
+    items.push(
+      ['Production deploys / week', num(d.deploysPerWeek), `${d.deploys} in the period; a commit deployed to several projects counts once`],
+      ['Lead time to production', duration(r.stats[ALL_CLASSES].deployLeadTimeP50Hours), 'median, first commit to live'],
+      ['Failed deploys', String(d.failedDeploys), 'builds that never went live'],
+      ['Not in production yet', String(d.undeployed), `${n.plural} landed but not deployed`],
+    );
+  }
+  if (d.incidents !== null) {
+    items.push(
+      ['Incidents', String(d.incidents), Object.entries(d.incidentsBySource).map(([src, count]) => `${INCIDENT_SOURCE_NAMES[src as keyof typeof INCIDENT_SOURCE_NAMES]} ${count}`).join(' · ') || 'none in the period'],
+      ['Deploys followed by an incident', pct(d.deployFailureRate), d.deploysWithIncident === null ? 'needs deployment data' : `${d.deploysWithIncident} of ${d.deploys}, within ${d.attributionHours}h`],
+      ['Time to restore', duration(d.timeToRestoreP50Hours), 'median, opened to resolved'],
+      ['Linked to a change', String(d.linkedIncidents), 'incidents with a Caused-by reference'],
+    );
+  }
+  // Which changes each incident named as its cause.
+  const blamed = new Map<string, string[]>();
+  for (const c of r.changes) {
+    for (const e of c.rework) {
+      if (e.from?.kind !== ReworkSourceKind.Incident) continue;
+      const key = incidentKey(e.from.source, e.from.id);
+      blamed.set(key, [...(blamed.get(key) ?? []), `<a href="${esc(c.url)}">${esc(c.id)}</a>`]);
+    }
+  }
+  const incidents = [...(r.incidents ?? [])].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, MAX_INCIDENT_ROWS);
+  const list = incidents.length
+    ? table(
+        ['Incident', 'Source', 'Opened', 'Time to restore', 'Caused by'],
+        incidents.map((i) => [
+          `<a href="${esc(i.url)}">${esc(i.id)}</a> ${esc(i.title)}`,
+          INCIDENT_SOURCE_NAMES[i.source],
+          `<span class="nw">${isoDate(i.createdAt)}</span>`,
+          i.resolvedAt ? duration((Date.parse(i.resolvedAt) - Date.parse(i.createdAt)) / MS_PER_HOUR) : '<span class="hint">open</span>',
+          (blamed.get(incidentKey(i.source, i.id)) ?? []).join(', ') || '<span class="hint">not linked</span>',
+        ]),
+        5,
+      )
+    : '';
+  const env = d.environments.length ? ` Environments: ${d.environments.map(esc).join(', ')}.` : '';
+  return card(
+    'Delivery',
+    `Deployments and incidents, DORA style. A deploy counts as failed if an incident opened within ${d.attributionHours} hours of it going live.${env}`,
+    figures(items) + (d.deploySource ? `<div class="legend"><span><span class="swatch deploy-bar-swatch"></span>Production deploys per week</span>${d.incidents !== null ? '<span><span class="swatch incident-swatch"></span>Week with an incident</span>' : ''}</div>${deployColumns(r)}` : '') + list,
+  );
+}
+
+function costCard(r: Report): string {
+  const c = r.cost;
+  if (!c) return '';
+  const n = nouns(r.unit);
+  const items: [string, string, string?][] = [
+    ['AI spend', usd(c.usd), `${c.from} to ${c.until}`],
+    ['Per durable change', usd(c.perDurableChange), `${c.durable} durable agent and assisted ${n.plural}`],
+    ['Per 1,000 surviving lines', usd(c.perThousandSurvivingLines), 'AI-written lines still there after the window'],
+    ['Still maturing', usd(c.maturingUsd), 'spend on changes not judged yet'],
+  ];
+  const tools = c.byTool.length
+    ? table(['Tool', 'Spend', `Durable ${n.plural}`, 'Per durable change'], c.byTool.map((t) => [esc(t.tool), usd(t.usd), String(t.durable), usd(t.perDurableChange)]))
+    : '<p class="hint">No AI spend recorded in the matured period.</p>';
+  return card(
+    'AI spend',
+    `Spend over the matured period, against the agent and assisted ${n.plural} that landed in it and held up. Spend from ${c.actors} ${c.actors === 1 ? 'person' : 'people'}; it covers all their work, so limit it with <code>cost.actors</code> or combine repositories with <code>rollup</code>.`,
+    figures(items) + tools,
+  );
 }
 
 function fixesCard(r: Report): string {
@@ -345,6 +456,10 @@ ${comparisonCard(r)}
 </section>
 
 ${toolsCard(r)}
+
+${deliveryCard(r)}
+
+${costCard(r)}
 
 <section>
   <div class="grid2">

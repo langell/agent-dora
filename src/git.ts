@@ -221,3 +221,12 @@ export async function commitsIn(repoPath: string, range: string): Promise<{ oid:
 export async function diffSize(repoPath: string, from: string, to: string, ignored: (path: string) => boolean = () => false): Promise<number> {
   return (await numstat(repoPath, from, to)).filter((f) => !ignored(f.path)).reduce((n, f) => n + f.added + f.deleted, 0);
 }
+
+/**
+ * Commits reachable from `tip` but from none of `exclude`, committed on or after `since`;
+ * null if any of the commits isn't in the local history.
+ */
+export async function newCommits(repoPath: string, tip: string, exclude: string[], since: Date): Promise<string[] | null> {
+  const out = await tryGit(repoPath, ['rev-list', `--since=${since.toISOString()}`, tip, '--not', ...exclude]);
+  return out === null ? null : out.split('\n').filter(Boolean);
+}

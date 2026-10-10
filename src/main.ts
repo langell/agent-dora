@@ -169,7 +169,11 @@ function loaded(snap: Snapshot | null): Snapshot {
 }
 
 function writeReport(snap: Snapshot, cfg: Config, outDir: string, log: (m: string) => void): void {
-  const report = aggregate(snap, new Date(snap.collectedAt), { compareDays: cfg.compareDays, hotspotDepth: cfg.hotspotDepth });
+  const report = aggregate(snap, new Date(snap.collectedAt), {
+    compareDays: cfg.compareDays,
+    hotspotDepth: cfg.hotspotDepth,
+    attributionHours: cfg.incidents.attributionHours,
+  });
   const summary = renderMarkdown(report);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, ReportFile.Html), renderHtml(report));

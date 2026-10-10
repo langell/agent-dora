@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AuthorClass, CONFIG_FILE, UnitSetting } from './constants.js';
+import { AuthorClass, CONFIG_FILE, DeploySourceSetting, UnitSetting } from './constants.js';
 
 export { CONFIG_FILE } from './constants.js';
 
@@ -67,6 +67,42 @@ export interface Config {
   botReviewers: string[];
   /** Globs of files excluded from durability measurement. */
   ignoreFiles: string[];
+  /** Production deployments, for deploy-based lead time and deployment frequency. */
+  deployments: {
+    /** `auto` uses GitHub Deployments when the repo has production ones, else Vercel when configured. */
+    source: DeploySourceSetting;
+    /** Regex (case-insensitive) matching production environment names. */
+    environment: string;
+    /** Vercel project ids or names, for the Vercel source (needs VERCEL_TOKEN). */
+    vercelProjects: string[];
+    /** Vercel team id, when the projects belong to a team. */
+    vercelTeamId: string;
+  };
+  /** Incident and bug trackers, each used when its credentials are set. */
+  incidents: {
+    /** Linear team keys to read (empty: every team). Needs LINEAR_API_KEY. */
+    linearTeams: string[];
+    /** Linear labels that mark an incident or production bug. */
+    linearLabels: string[];
+    /** Jira site, e.g. "acme.atlassian.net". Needs JIRA_EMAIL and JIRA_API_TOKEN. */
+    jiraSite: string;
+    /** JQL selecting incidents or production bugs; a date bound is added. */
+    jiraJql: string;
+    /** PagerDuty service ids (empty: every service). Needs PAGERDUTY_TOKEN. */
+    pagerdutyServices: string[];
+    /** An incident with no `Caused-by` link counts against the last production deploy this many hours before it. */
+    attributionHours: number;
+  };
+  /** AI spend. The Anthropic Admin API is read when ANTHROPIC_ADMIN_KEY is set. */
+  cost: {
+    /** CSV (`date,tool,usd[,actor]`) or Claude Code OpenTelemetry (OTLP JSON) files, relative to the repo. */
+    files: string[];
+    /**
+     * Only count spend by these people (emails or API key names). Spend is reported for the whole
+     * organization, so set this to the people working on this repository, or use `rollup`.
+     */
+    actors: string[];
+  };
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -151,51 +187,74 @@ export const DEFAULT_CONFIG: Config = {
     '**/vendor/**',
     '**/__generated__/**',
   ],
+  deployments: {
+    source: DeploySourceSetting.Auto,
+    environment: '^production',
+    vercelProjects: [],
+    vercelTeamId: '',
+  },
+  incidents: {
+    linearTeams: [],
+    linearLabels: ['Bug', 'Incident'],
+    jiraSite: '',
+    jiraJql: 'issuetype in (Bug, Incident)',
+    pagerdutyServices: [],
+    attributionHours: 24,
+  },
+  cost: {
+    files: [],
+    actors: [],
+  },
 };
 
 /** Config keys with no default value. */
 const OPTIONAL_KEYS: readonly string[] = ['branch'] satisfies (keyof Config)[];
 /** Config keys holding an object merged key by key with the default. */
-const MERGED_KEYS = { Labels: 'labels', Tools: 'tools' } as const satisfies Record<string, keyof Config>;
+const MERGED_KEYS = ['labels', 'tools', 'deployments', 'incidents', 'cost'] as const satisfies readonly (keyof Config)[];
+type MergedKey = (typeof MERGED_KEYS)[number];
+/** Merged objects whose keys are the user's to name (tool names), not a fixed set. */
+const OPEN_KEYS: readonly MergedKey[] = ['tools'];
 
 const describe = (v: unknown) => (Array.isArray(v) ? 'an array' : v === null ? 'null' : typeof v);
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** Checks `value` against the shape of `def`; returns what's wrong, or null. */
+function mismatch(value: unknown, def: unknown): string | null {
+  if (Array.isArray(def)) {
+    // An empty default array holds strings.
+    const type = def.length ? typeof def[0] : 'string';
+    return Array.isArray(value) && value.every((x) => typeof x === type) ? null : `an array of ${type}s`;
+  }
+  return typeof value === typeof def ? null : `a ${typeof def}`;
+}
 
 /**
  * Checks a parsed config file against the shape of `DEFAULT_CONFIG`. Wrong types are
  * errors; unknown keys only warn, since they're usually typos that silently do nothing.
  */
 function validate(raw: unknown, file: string, warn: (msg: string) => void): Partial<Config> {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error(`${file} must hold a JSON object`);
+  if (!isObject(raw)) throw new Error(`${file} must hold a JSON object`);
   const defaults: Record<string, unknown> = DEFAULT_CONFIG as unknown as Record<string, unknown>;
+  const check = (path: string, value: unknown, def: unknown) => {
+    const wrong = mismatch(value, def);
+    if (wrong) throw new Error(`${file}: "${path}" must be ${wrong}, got ${describe(value)}`);
+  };
   for (const [key, value] of Object.entries(raw)) {
-    const fail = (expected: string) => {
-      throw new Error(`${file}: "${key}" must be ${expected}, got ${describe(value)}`);
-    };
     if (OPTIONAL_KEYS.includes(key)) {
-      if (typeof value !== 'string') fail('a string');
-      continue;
-    }
-    if (!(key in defaults)) {
+      check(key, value, '');
+    } else if (!(key in defaults)) {
       warn(`${file}: unknown key "${key}" has no effect`);
-      continue;
-    }
-    const def = defaults[key];
-    if (Array.isArray(def)) {
-      const type = typeof def[0];
-      if (!Array.isArray(value) || !value.every((x) => typeof x === type)) fail(`an array of ${type}s`);
-    } else if (key === MERGED_KEYS.Labels || key === MERGED_KEYS.Tools) {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) fail('an object');
-      const inner = def as Record<string, unknown>;
-      for (const [k, v] of Object.entries(value as object)) {
-        if (key === MERGED_KEYS.Labels) {
-          if (!(k in inner)) warn(`${file}: unknown label group "${k}" has no effect`);
-          if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) throw new Error(`${file}: "labels.${k}" must be an array of strings`);
-        } else if (typeof v !== 'string') {
-          throw new Error(`${file}: "tools.${k}" must be a regex string`);
-        }
+    } else if ((MERGED_KEYS as readonly string[]).includes(key)) {
+      if (!isObject(value)) throw new Error(`${file}: "${key}" must be an object, got ${describe(value)}`);
+      const inner = defaults[key] as Record<string, unknown>;
+      const open = (OPEN_KEYS as readonly string[]).includes(key);
+      for (const [k, v] of Object.entries(value)) {
+        if (open) check(`${key}.${k}`, v, Object.values(inner)[0]);
+        else if (!(k in inner)) warn(`${file}: unknown key "${key}.${k}" has no effect`);
+        else check(`${key}.${k}`, v, inner[k]);
       }
-    } else if (typeof value !== typeof def) {
-      fail(`a ${typeof def}`);
+    } else {
+      check(key, value, defaults[key]);
     }
   }
   return raw as Partial<Config>;
@@ -231,7 +290,16 @@ export function loadConfig(repoPath: string, overrides: Partial<Config> = {}, wa
     ...overrides,
     labels: { ...DEFAULT_CONFIG.labels, ...fromFile.labels, ...overrides.labels },
     tools: { ...DEFAULT_CONFIG.tools, ...fromFile.tools, ...overrides.tools },
+    deployments: { ...DEFAULT_CONFIG.deployments, ...fromFile.deployments, ...overrides.deployments },
+    incidents: { ...DEFAULT_CONFIG.incidents, ...fromFile.incidents, ...overrides.incidents },
+    cost: { ...DEFAULT_CONFIG.cost, ...fromFile.cost, ...overrides.cost },
   };
+  checkRegex(merged.deployments.environment, 'deployments.environment');
+  const sources: readonly string[] = Object.values(DeploySourceSetting);
+  if (!sources.includes(merged.deployments.source)) {
+    throw new Error(`deployments.source must be one of ${sources.join(', ')}, got "${merged.deployments.source}"`);
+  }
+  if (!(merged.incidents.attributionHours > 0)) throw new Error(`incidents.attributionHours must be positive, got ${merged.incidents.attributionHours}`);
   merged.assistedPatterns.forEach((p, i) => checkRegex(p, `assistedPatterns[${i}]`));
   for (const [name, p] of Object.entries(merged.tools)) checkRegex(p, `tools.${name}`);
   if (!merged.checkpointDays.every((d) => d > 0)) throw new Error(`checkpointDays must be positive, got ${merged.checkpointDays.join(', ')}`);

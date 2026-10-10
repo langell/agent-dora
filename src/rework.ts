@@ -1,11 +1,16 @@
 import type { Config } from './config.js';
 import { prId, ReworkKind, ReworkSourceKind, shortSha } from './constants.js';
 import { REVERT_MARKER, subject, type RevertCommit } from './git.js';
-import type { RawIssue, RawPr, ReworkEvent, ReworkSource } from './types.js';
+import type { Incident, RawIssue, RawPr, ReworkEvent, ReworkSource } from './types.js';
 
-const CAUSED_BY_SHA = /\b(?:caused[- ]by|regressed[- ]by|regression (?:from|in|introduced (?:by|in)))[:\s]+([0-9a-f]{7,40})\b/gi;
-
-const CAUSED_BY = /\b(?:caused[- ]by|regressed[- ]by|regression (?:from|in|introduced (?:by|in)))[:\s]+(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi;
+/** "Caused-by:", "regressed by", "regression from"...: how a report names the change that caused it. */
+const CAUSE = String.raw`\b(?:caused[- ]by|regressed[- ]by|regression (?:from|in|introduced (?:by|in)))[:\s]+`;
+const CAUSED_BY_SHA = new RegExp(`${CAUSE}([0-9a-f]{7,40})\\b`, 'gi');
+const CAUSED_BY = new RegExp(`${CAUSE}(?:[\\w.-]+\\/[\\w.-]+)?#(\\d+)`, 'gi');
+/** `Caused-by: https://github.com/owner/name/pull/12`, as pasted into trackers. */
+const CAUSED_BY_PR_URL = new RegExp(`${CAUSE}https?:\\/\\/[^\\s/]+\\/([\\w.-]+\\/[\\w.-]+)\\/pull\\/(\\d+)`, 'gi');
+/** `Caused-by: https://github.com/owner/name/commit/<sha>`. */
+const CAUSED_BY_COMMIT_URL = new RegExp(`${CAUSE}https?:\\/\\/[^\\s/]+\\/[\\w.-]+\\/[\\w.-]+\\/commit\\/([0-9a-f]{7,40})`, 'gi');
 const GITHUB_REVERT_BODY = /\bReverts [\w.-]+\/[\w.-]+#(\d+)/g;
 const REVERT_TITLE = /^Revert "(.+)"$/;
 const PR_REF = /(?:^|[^\w/])#(\d+)\b/g;
@@ -14,8 +19,36 @@ const refs = (text: string, re: RegExp) => [...text.matchAll(re)].map((m) => Num
 /** Whether `re` matches anywhere in `text`; `search` ignores a global regex's `lastIndex`. */
 const has = (text: string, re: RegExp) => text.search(re) !== -1;
 
-/** The text of an issue that may reference the change that caused it. */
-const issueText = (issue: RawIssue) => `${issue.title}\n${issue.body}`;
+/** A report of a defect that may name the change that caused it: a GitHub bug issue or a tracker incident. */
+export interface BugReport {
+  from: ReworkSource;
+  kind: ReworkEvent['kind'];
+  text: string;
+  createdAt: string;
+}
+
+export const issueReport = (issue: RawIssue): BugReport => ({
+  from: { kind: ReworkSourceKind.Issue, number: issue.number },
+  kind: ReworkKind.Bug,
+  text: `${issue.title}\n${issue.body}`,
+  createdAt: issue.createdAt,
+});
+
+export const incidentReport = (incident: Incident): BugReport => ({
+  from: { kind: ReworkSourceKind.Incident, source: incident.source, id: incident.id },
+  kind: ReworkKind.Incident,
+  text: incident.text,
+  createdAt: incident.createdAt,
+});
+
+/** PR numbers a report blames, by `#N` or by a URL of a PR in `repo`. */
+function causedPrs(text: string, repo: string | undefined): number[] {
+  const byUrl = [...text.matchAll(CAUSED_BY_PR_URL)].filter((m) => !repo || m[1]!.toLowerCase() === repo.toLowerCase()).map((m) => Number(m[2]));
+  return [...refs(text, CAUSED_BY), ...byUrl];
+}
+
+/** Commit SHAs (possibly abbreviated) a report blames, bare or as commit URLs. */
+const causedShas = (text: string) => [...[...text.matchAll(CAUSED_BY_SHA)], ...[...text.matchAll(CAUSED_BY_COMMIT_URL)]].map((m) => m[1]!);
 
 /** How a rework source is shown to users. */
 export function sourceLabel(from: ReworkSource): string {
@@ -26,10 +59,21 @@ export function sourceLabel(from: ReworkSource): string {
       return shortSha(from.oid);
     case ReworkSourceKind.Issue:
       return `issue ${prId(from.number)}`;
+    case ReworkSourceKind.Incident:
+      return from.id;
   }
 }
 
-const sourceKey = (from: ReworkSource) => `${from.kind}:${from.kind === ReworkSourceKind.Commit ? from.oid : from.number}`;
+function sourceKey(from: ReworkSource): string {
+  switch (from.kind) {
+    case ReworkSourceKind.Commit:
+      return `${from.kind}:${from.oid}`;
+    case ReworkSourceKind.Incident:
+      return `${from.kind}:${from.source}:${from.id}`;
+    default:
+      return `${from.kind}:${from.number}`;
+  }
+}
 
 /**
  * Accumulates rework events. Drops fixes dated before the change they fix
@@ -52,7 +96,7 @@ function reworkLog() {
  * for an earlier change, whether or not that earlier change is in the collected set.
  */
 export function looksRemedial(text: string): boolean {
-  return REVERT_TITLE.test(subject(text)) || text.includes(REVERT_MARKER) || has(text, GITHUB_REVERT_BODY) || has(text, CAUSED_BY) || has(text, CAUSED_BY_SHA);
+  return REVERT_TITLE.test(subject(text)) || text.includes(REVERT_MARKER) || has(text, GITHUB_REVERT_BODY) || has(text, CAUSED_BY) || has(text, CAUSED_BY_SHA) || has(text, CAUSED_BY_PR_URL) || has(text, CAUSED_BY_COMMIT_URL);
 }
 
 /** PRs that revert or fix earlier changes: sources of rework, rework-labelled, or revert-shaped. */
@@ -70,14 +114,16 @@ export function remedialPrs(merged: RawPr[], events: ReworkEvent[], cfg: Config)
  * Finds evidence that a merged PR needed fixing after it shipped:
  * - revert: a git revert of its commits, GitHub's "Revert" button, or a `Revert "<title>"` PR;
  * - rework: a PR with a rework label (hotfix, regression...) that references it as #N;
- * - bug: an issue or PR saying `Caused-by: #N` (or "regression from #N").
+ * - bug: an issue or PR saying `Caused-by: #N` (or "regression from #N", or the PR's URL);
+ * - incident: the same, in an incident or production bug from a tracker.
  */
 export function findRework(
   merged: RawPr[],
-  bugIssues: RawIssue[],
+  reports: BugReport[],
   reverts: RevertCommit[],
   resolveOid: (short: string) => string,
   cfg: Config,
+  repo?: string,
 ): ReworkEvent[] {
   const byNumber = new Map(merged.map((p) => [p.number, p]));
   const byOid = new Map<string, number>();
@@ -117,12 +163,10 @@ export function findRework(
     if (p.labels.some((l) => reworkLabels.has(l.toLowerCase()))) {
       for (const n of refs(`${p.title}\n${p.body}`, PR_REF)) add(n, ReworkKind.Rework, p.mergedAt, src);
     }
-    for (const n of refs(p.body, CAUSED_BY)) add(n, ReworkKind.Bug, p.mergedAt, src);
+    for (const n of causedPrs(p.body, repo)) add(n, ReworkKind.Bug, p.mergedAt, src);
   }
 
-  for (const issue of bugIssues) {
-    for (const n of refs(issueText(issue), CAUSED_BY)) add(n, ReworkKind.Bug, issue.createdAt, { kind: ReworkSourceKind.Issue, number: issue.number });
-  }
+  for (const r of reports) for (const n of causedPrs(r.text, repo)) add(n, r.kind, r.createdAt, r.from);
 
   return log.events();
 }
@@ -135,9 +179,9 @@ export interface CommitChange {
   owners: Set<string>;
 }
 
-/** Short SHAs referenced by `Caused-by: <sha>` in the given texts, for resolving up front. */
+/** Short SHAs referenced by `Caused-by: <sha>` (or a commit URL) in the given texts, for resolving up front. */
 export function causedByShas(texts: string[]): string[] {
-  return texts.flatMap((t) => [...t.matchAll(CAUSED_BY_SHA)].map((m) => m[1]!));
+  return texts.flatMap(causedShas);
 }
 
 /**
@@ -146,7 +190,7 @@ export function causedByShas(texts: string[]): string[] {
  */
 export function findCommitRework(
   changes: CommitChange[],
-  bugIssues: RawIssue[],
+  reports: BugReport[],
   reverts: RevertCommit[],
   resolveOid: (short: string) => string,
 ): ReworkEvent[] {
@@ -164,10 +208,8 @@ export function findCommitRework(
 
   for (const r of reverts) for (const short of r.reverts) add(short, ReworkKind.Revert, r.at, commit(r.oid));
   for (const c of changes) {
-    for (const m of c.message.matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, c.committedAt, commit(c.oid));
+    for (const sha of causedShas(c.message)) add(sha, ReworkKind.Bug, c.committedAt, commit(c.oid));
   }
-  for (const issue of bugIssues) {
-    for (const m of issueText(issue).matchAll(CAUSED_BY_SHA)) add(m[1]!, ReworkKind.Bug, issue.createdAt, { kind: ReworkSourceKind.Issue, number: issue.number });
-  }
+  for (const r of reports) for (const sha of causedShas(r.text)) add(sha, r.kind, r.createdAt, r.from);
   return log.events();
 }

@@ -10,10 +10,10 @@ import type { ChangeRecord, RawPr } from './types.js';
 import { GIT_CONCURRENCY, mapLimit, progress } from './util.js';
 
 /** PR mode: every PR merged into the branch is one change. */
-export async function prChanges(prs: RawPr[], { repoPath, ref, since, cfg, now, bugIssues, cache, log = () => {} }: ModeOptions): Promise<ChangeRecord[]> {
+export async function prChanges(prs: RawPr[], { repoPath, ref, repo, since, cfg, now, reports, cache, log = () => {} }: ModeOptions): Promise<ChangeRecord[]> {
   const reverts = await g.revertCommits(repoPath, ref, since);
   const resolve = await g.expandOids(repoPath, reverts.flatMap((r) => r.reverts));
-  const rework = findRework(prs, bugIssues, reverts, resolve, cfg);
+  const rework = findRework(prs, reports, reverts, resolve, cfg, repo);
   const remedial = remedialPrs(prs, rework, cfg);
   const ignored = fileMatcher(cfg.ignoreFiles);
 

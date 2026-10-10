@@ -81,6 +81,19 @@ table.matrix tr:hover td.heat { background: color-mix(in srgb, var(--ink) calc(v
 .chart text.on-depth-0, .chart text.on-depth-1 { fill: var(--surface); }
 .chart text.on-depth-2 { fill: var(--ink); }
 code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Like the tiles: each figure spans three shared rows (label, value, detail), so values line up when a label wraps. */
+.figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); column-gap: 16px; row-gap: 16px; margin-bottom: 16px; }
+.figures > div { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: 0; align-content: start; }
+.figures .tile-label { align-self: end; }
+.figure { font-size: 22px; font-weight: 600; margin: 2px 0; line-height: 1.2; }
+/* Deploys are one neutral series (author colors mean authorship); incidents use the critical status color, always labelled. */
+svg.deploys { display: block; width: 100%; height: auto; margin-bottom: 16px; }
+svg.deploys text { fill: var(--muted); font-size: 11px; }
+svg.deploys g:hover .deploy-bar { fill: var(--ink); }
+.deploy-bar { fill: color-mix(in srgb, var(--ink-2) 70%, transparent); }
+.incident-mark { fill: var(--critical); }
+.deploy-bar-swatch { background: color-mix(in srgb, var(--ink-2) 70%, transparent); }
+.incident-swatch { background: var(--critical); border-radius: 50%; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 12px; color: var(--ink-2); font-size: 13px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 .chart { position: relative; }

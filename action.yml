@@ -36,6 +36,24 @@ inputs:
   pr:
     description: PR number for `label`. Defaults to the triggering pull request.
     default: ${{ github.event.pull_request.number }}
+  anthropic-admin-key:
+    description: Anthropic Admin API key, for Claude Code spend (AI cost per durable change).
+    default: ""
+  vercel-token:
+    description: Vercel token, for deployments when GitHub Deployments aren't recorded (set deployments.vercelProjects).
+    default: ""
+  linear-api-key:
+    description: Linear API key, for incidents and production bugs.
+    default: ""
+  jira-email:
+    description: Jira account email, with jira-api-token (set incidents.jiraSite).
+    default: ""
+  jira-api-token:
+    description: Jira API token.
+    default: ""
+  pagerduty-token:
+    description: PagerDuty REST API key, for incidents.
+    default: ""
 
 outputs:
   report-dir:
@@ -81,6 +99,12 @@ runs:
         AD_THRESHOLD: ${{ inputs.threshold }}
         AD_PR: ${{ inputs.pr }}
         AD_REPO: ${{ github.repository }}
+        ANTHROPIC_ADMIN_KEY: ${{ inputs.anthropic-admin-key }}
+        VERCEL_TOKEN: ${{ inputs.vercel-token }}
+        LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        JIRA_EMAIL: ${{ inputs.jira-email }}
+        JIRA_API_TOKEN: ${{ inputs.jira-api-token }}
+        PAGERDUTY_TOKEN: ${{ inputs.pagerduty-token }}
       run: |
         args=("$AD_COMMAND" --repo "$AD_REPO" --path "$AD_PATH")
         [ -n "$AD_UNIT" ] && args+=(--unit "$AD_UNIT")
