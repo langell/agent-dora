@@ -122,7 +122,7 @@ function delta(r: Report, field: keyof ClassStats, higherIsBetter: boolean, rela
   const shown = Math.round(Math.abs(change) * POINTS);
   if (shown === 0) return `<span class="delta">no change vs the prior ${cmp.days} days</span>`;
   const better = change > 0 === higherIsBetter;
-  const amount = relative ? `${shown}%` : `${shown} pts`;
+  const amount = relative ? `${shown}%` : `${shown} ${shown === 1 ? 'pt' : 'pts'}`;
   return `<span class="delta ${better ? 'status-good' : 'status-bad'}">${change > 0 ? '▲' : '▼'} ${amount} vs the prior ${cmp.days} days</span>`;
 }
 

@@ -43,9 +43,11 @@ a { color: inherit; }
 section { margin-top: 32px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 12px; margin-top: 24px; }
-.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
-.tile-label { color: var(--ink-2); font-size: 13px; }
-.tile-value { font-size: 32px; font-weight: 600; margin: 4px 0; }
+.tile-sub { align-self: start; }
+/* Each tile spans four shared rows (label, value, detail, change), so values line up across a row of tiles even when a label wraps. */
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; align-content: start; }
+.tile-label { color: var(--ink-2); font-size: 13px; align-self: end; }
+.tile-value { font-size: 32px; font-weight: 600; margin: 4px 0; line-height: 1.2; }
 .tile-sub { color: var(--muted); font-size: 12px; }
 .banner { margin-top: 24px; padding: 12px 16px; border-radius: 8px; background: var(--wash); border: 1px solid var(--border); color: var(--ink-2); }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
