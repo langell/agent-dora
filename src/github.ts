@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { MS_PER_SECOND, TOOL_NAME } from './constants.js';
+import { MS_PER_SECOND, prId, TOOL_NAME, type ReviewState } from './constants.js';
 import type { RawIssue, RawPr } from './types.js';
 
 const run = promisify(execFile);
@@ -15,6 +15,13 @@ const REST_MEDIA_TYPE = 'application/vnd.github+json';
 /** GitHub's GraphQL `PullRequestState` values. */
 const PrState = { Merged: 'MERGED', Open: 'OPEN' } as const;
 type PrState = (typeof PrState)[keyof typeof PrState];
+
+/** GitHub's GraphQL `PullRequestOrderField` / `IssueOrderField` values. */
+const OrderField = { CreatedAt: 'CREATED_AT', UpdatedAt: 'UPDATED_AT' } as const;
+type OrderField = (typeof OrderField)[keyof typeof OrderField];
+
+/** `__typename` of an actor that is a GitHub App or bot account. */
+const BOT_TYPENAME = 'Bot';
 
 /** Issue timeline event type for a label being added. */
 const EVENT_LABELED = 'labeled';
@@ -47,23 +54,28 @@ export async function resolveToken(): Promise<string> {
 }
 
 const PR_FIELDS = `
-  number title body url createdAt mergedAt isDraft headRefName baseRefName additions deletions
+  number title body url createdAt updatedAt mergedAt isDraft headRefName baseRefName additions deletions
   author{login}
   labels(first:${MAX_PR_LABELS}){nodes{name}}
   mergeCommit{oid}
   commits(first:${MAX_PR_COMMITS}){totalCount nodes{commit{oid message authoredDate}}}
-  reviews(first:${MAX_PR_REVIEWS}){nodes{submittedAt author{login}}}
+  reviews(first:${MAX_PR_REVIEWS}){nodes{submittedAt state body author{__typename login} comments{totalCount}}}
 `;
 
 /** A page of a GraphQL connection. */
 type Connection<N> = { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: N[] };
 
+type ReviewNode = {
+  submittedAt: string | null; state: ReviewState; body: string | null;
+  author: { __typename?: string; login: string } | null; comments?: { totalCount: number };
+};
+
 type PrNode = {
-  number: number; title: string; body: string; url: string; createdAt: string; mergedAt: string | null;
+  number: number; title: string; body: string; url: string; createdAt: string; updatedAt: string; mergedAt: string | null;
   isDraft: boolean; headRefName: string; baseRefName: string; additions: number; deletions: number;
   author: { login: string } | null; labels: { nodes: { name: string }[] }; mergeCommit: { oid: string } | null;
   commits: { totalCount: number; nodes: { commit: { oid: string; message: string; authoredDate: string } }[] };
-  reviews: { nodes: { submittedAt: string | null; author: { login: string } | null }[] };
+  reviews: { nodes: ReviewNode[] };
 };
 
 function toRawPr(n: PrNode): RawPr {
@@ -74,6 +86,7 @@ function toRawPr(n: PrNode): RawPr {
     url: n.url,
     author: n.author?.login ?? null,
     createdAt: n.createdAt,
+    updatedAt: n.updatedAt ?? n.createdAt,
     mergedAt: n.mergedAt,
     isDraft: n.isDraft,
     headRefName: n.headRefName,
@@ -85,8 +98,14 @@ function toRawPr(n: PrNode): RawPr {
     commitCount: n.commits.totalCount,
     commits: n.commits.nodes.map((c) => c.commit),
     reviews: n.reviews.nodes
-      .filter((r): r is { submittedAt: string; author: { login: string } | null } => !!r.submittedAt)
-      .map((r) => ({ submittedAt: r.submittedAt, author: r.author?.login ?? null })),
+      .filter((r): r is ReviewNode & { submittedAt: string } => !!r.submittedAt)
+      .map((r) => ({
+        submittedAt: r.submittedAt,
+        author: r.author?.login ?? null,
+        isBot: r.author?.__typename === BOT_TYPENAME,
+        state: r.state,
+        commented: !!r.body?.trim() || (r.comments?.totalCount ?? 0) > 0,
+      })),
   };
 }
 
@@ -140,26 +159,32 @@ export class GitHub {
     return data.repository.defaultBranchRef.name;
   }
 
-  /** Merged PRs created on or after `since`, newest first. */
+  /**
+   * PRs merged on or after `since`, most recently updated first. Paged by update time,
+   * since a PR's last update is never before its merge: a PR opened long ago but merged
+   * recently is included, so long-running PRs don't drop out of lead time.
+   */
   async mergedPrs(since: Date, onPage?: (n: number) => void): Promise<RawPr[]> {
-    return this.pullRequests(PrState.Merged, since, onPage);
+    const prs = await this.pullRequests(PrState.Merged, OrderField.UpdatedAt, since, onPage);
+    return prs.filter((p) => p.mergedAt && Date.parse(p.mergedAt) >= since.getTime());
   }
 
   async openPrs(): Promise<RawPr[]> {
-    return this.pullRequests(PrState.Open, new Date(0));
+    return this.pullRequests(PrState.Open, OrderField.CreatedAt, new Date(0));
   }
 
-  private async pullRequests(state: PrState, since: Date, onPage?: (n: number) => void): Promise<RawPr[]> {
+  private async pullRequests(state: PrState, order: OrderField, since: Date, onPage?: (n: number) => void): Promise<RawPr[]> {
     const query = `query($owner:String!,$name:String!,$cursor:String,$states:[PullRequestState!]){
       repository(owner:$owner,name:$name){
-        pullRequests(states:$states, first:${PR_PAGE_SIZE}, after:$cursor, orderBy:{field:CREATED_AT, direction:DESC}){
+        pullRequests(states:$states, first:${PR_PAGE_SIZE}, after:$cursor, orderBy:{field:${order}, direction:DESC}){
           pageInfo{hasNextPage endCursor}
           nodes{${PR_FIELDS}}
         }
       }
     }`;
     type Data = { repository: { pullRequests: Connection<PrNode> } };
-    const nodes = await this.newestSince<Data, PrNode>(query, { states: [state] }, (d) => d.repository.pullRequests, since, onPage);
+    const at = (n: PrNode) => (order === OrderField.UpdatedAt ? n.updatedAt : n.createdAt);
+    const nodes = await this.newestSince<Data, PrNode>(query, { states: [state] }, (d) => d.repository.pullRequests, since, at, onPage);
     return nodes.map(toRawPr);
   }
 
@@ -175,26 +200,27 @@ export class GitHub {
       }
     }`;
     type Data = { repository: { issues: Connection<RawIssue> } };
-    const nodes = await this.newestSince<Data, RawIssue>(query, { labels }, (d) => d.repository.issues, since);
+    const nodes = await this.newestSince<Data, RawIssue>(query, { labels }, (d) => d.repository.issues, since, (n) => n.createdAt);
     return nodes.map((n) => ({ ...n, body: n.body ?? '' }));
   }
 
   /**
-   * Pages through a GraphQL connection ordered newest first (the query must take
-   * `$owner`, `$name` and `$cursor`), stopping at the first node created before `since`.
+   * Pages through a GraphQL connection ordered newest first by `at` (the query must take
+   * `$owner`, `$name` and `$cursor`), stopping at the first node whose `at` is before `since`.
    */
-  private async newestSince<T, N extends { createdAt: string }>(
+  private async newestSince<T, N>(
     query: string,
     variables: Record<string, unknown>,
     connection: (data: T) => Connection<N>,
     since: Date,
+    at: (node: N) => string,
     onPage?: (n: number) => void,
   ): Promise<N[]> {
     const out: N[] = [];
     let cursor: string | null = null;
     for (;;) {
       const page = connection(await this.graphql<T>(query, { owner: this.owner, name: this.name, cursor, ...variables }));
-      const older = page.nodes.findIndex((n) => Date.parse(n.createdAt) < since.getTime());
+      const older = page.nodes.findIndex((n) => Date.parse(at(n)) < since.getTime());
       out.push(...(older === -1 ? page.nodes : page.nodes.slice(0, older)));
       onPage?.(out.length);
       if (older !== -1 || !page.pageInfo.hasNextPage) return out;
@@ -218,7 +244,7 @@ export class GitHub {
       `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){${PR_FIELDS}}}}`,
       { owner: this.owner, name: this.name, number },
     );
-    if (!data.repository.pullRequest) throw new Error(`PR #${number} not found`);
+    if (!data.repository.pullRequest) throw new Error(`PR ${prId(number)} not found`);
     return toRawPr(data.repository.pullRequest);
   }
 

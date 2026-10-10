@@ -21,8 +21,8 @@ function stubFetch(handler: Handler) {
   return calls;
 }
 
-const prNode = (number: number, createdAt: string) => ({
-  number, title: `PR ${number}`, body: null, url: `https://x/${number}`, createdAt, mergedAt: createdAt, isDraft: false,
+const prNode = (number: number, createdAt: string, mergedAt = createdAt) => ({
+  number, title: `PR ${number}`, body: null, url: `https://x/${number}`, createdAt, updatedAt: mergedAt, mergedAt, isDraft: false,
   headRefName: 'f', baseRefName: 'main', additions: 1, deletions: 0, author: { login: 'a' },
   labels: { nodes: [] }, mergeCommit: { oid: `m${number}` },
   commits: { totalCount: 0, nodes: [] }, reviews: { nodes: [{ submittedAt: null, author: null }] },
@@ -47,6 +47,36 @@ test('mergedPrs pages through results and stops at the first PR older than since
   assert.deepEqual(seen, [2, 3]);
   assert.equal(prs[0]!.body, '');
   assert.deepEqual(prs[0]!.reviews, [], 'reviews without submittedAt are dropped');
+});
+
+test('mergedPrs pages by update time, so long-running PRs merged recently are included', async () => {
+  const calls = stubFetch(() => ({
+    data: { repository: { pullRequests: connection([
+      prNode(7, '2025-06-01T00:00:00Z', '2026-03-10T00:00:00Z'), // opened long before since, merged after
+      { ...prNode(6, '2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z'), updatedAt: '2026-03-08T00:00:00Z' }, // updated recently, merged before since
+      prNode(5, '2026-01-01T00:00:00Z', '2026-02-15T00:00:00Z'),
+    ], 'more') } },
+  }));
+  const prs = await new GitHub('t', 'o', 'r').mergedPrs(new Date('2026-03-01T00:00:00Z'));
+  assert.deepEqual(prs.map((p) => p.number), [7]);
+  assert.equal(calls.length, 1);
+});
+
+test('reviews record bot reviewers, state and whether they commented', async () => {
+  stubFetch(() => ({
+    data: { repository: { pullRequests: connection([{
+      ...prNode(1, '2026-03-05T00:00:00Z'),
+      reviews: { nodes: [
+        { submittedAt: '2026-03-05T01:00:00Z', state: 'COMMENTED', body: 'Looks fine', author: { __typename: 'Bot', login: 'copilot-pull-request-reviewer' }, comments: { totalCount: 3 } },
+        { submittedAt: '2026-03-05T02:00:00Z', state: 'APPROVED', body: '', author: { __typename: 'User', login: 'bob' }, comments: { totalCount: 0 } },
+      ] },
+    }], null) } },
+  }));
+  const [p] = await new GitHub('t', 'o', 'r').mergedPrs(new Date('2026-03-01T00:00:00Z'));
+  assert.deepEqual(p!.reviews, [
+    { submittedAt: '2026-03-05T01:00:00Z', author: 'copilot-pull-request-reviewer', isBot: true, state: 'COMMENTED', commented: true },
+    { submittedAt: '2026-03-05T02:00:00Z', author: 'bob', isBot: false, state: 'APPROVED', commented: false },
+  ]);
 });
 
 test('openPrs reads every page', async () => {

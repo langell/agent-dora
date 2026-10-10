@@ -47,20 +47,31 @@ export type ChangeKind = ValueOf<typeof ChangeKind>;
 export const DurabilityStatus = { Measured: 'measured', Pending: 'pending', Unavailable: 'unavailable' } as const;
 export type DurabilityStatus = ValueOf<typeof DurabilityStatus>;
 
-/** Why durability couldn't be measured. Shown to users as-is. */
+/** Why durability couldn't be measured. Stored in snapshots, so these codes must stay stable. */
 export const UnavailableReason = {
-  NoMergeCommit: 'no merge commit',
-  NotInHistory: 'merge commit not in local history (use fetch-depth: 0)',
-  NotOnBranch: 'not merged into the default branch',
-  NoMeasurableLines: 'no measurable added lines',
+  NoMergeCommit: 'no-merge-commit',
+  NotInHistory: 'not-in-history',
+  NotOnBranch: 'not-on-branch',
+  NoMeasurableLines: 'no-measurable-lines',
 } as const;
 export type UnavailableReason = ValueOf<typeof UnavailableReason>;
+
+export const UNAVAILABLE_REASON_NAMES: Record<UnavailableReason, string> = {
+  [UnavailableReason.NoMergeCommit]: 'no merge commit',
+  [UnavailableReason.NotInHistory]: 'merge commit not in local history (use fetch-depth: 0)',
+  [UnavailableReason.NotOnBranch]: 'not merged into the measured branch',
+  [UnavailableReason.NoMeasurableLines]: 'no measurable added lines',
+};
 
 export const ReworkKind = { Revert: 'revert', Rework: 'rework', Bug: 'bug' } as const;
 export type ReworkKind = ValueOf<typeof ReworkKind>;
 
+/** What kind of thing showed that a change needed fixing. */
+export const ReworkSourceKind = { Pr: 'pr', Commit: 'commit', Issue: 'issue' } as const;
+export type ReworkSourceKind = ValueOf<typeof ReworkSourceKind>;
+
 /** A change's standing in the report, derived from its durability. */
-export const ChangeStatus = { Durable: 'durable', Failed: 'failed', Pending: 'pending', Unknown: 'unknown' } as const;
+export const ChangeStatus = { Durable: 'durable', Failed: 'failed', Pending: 'pending', Unknown: 'unknown', Remedial: 'remedial' } as const;
 export type ChangeStatus = ValueOf<typeof ChangeStatus>;
 
 export const CHANGE_STATUS_NAMES: Record<ChangeStatus, string> = {
@@ -68,7 +79,18 @@ export const CHANGE_STATUS_NAMES: Record<ChangeStatus, string> = {
   [ChangeStatus.Failed]: 'Not durable',
   [ChangeStatus.Pending]: 'Maturing',
   [ChangeStatus.Unknown]: 'Unknown',
+  [ChangeStatus.Remedial]: 'Fix or revert',
 };
+
+/** GitHub's `PullRequestReviewState` values. */
+export const ReviewState = {
+  Approved: 'APPROVED',
+  ChangesRequested: 'CHANGES_REQUESTED',
+  Commented: 'COMMENTED',
+  Dismissed: 'DISMISSED',
+  Pending: 'PENDING',
+} as const;
+export type ReviewState = ValueOf<typeof ReviewState>;
 
 // ---- CLI --------------------------------------------------------------------
 
@@ -86,11 +108,15 @@ export const ReportFile = { Html: 'index.html', Json: 'metrics.json', Summary: '
 
 // ---- Time -------------------------------------------------------------------
 
+export const SECONDS_PER_MINUTE = 60;
+export const MINUTES_PER_HOUR = 60;
+export const HOURS_PER_DAY = 24;
+export const DAYS_PER_WEEK = 7;
 export const MS_PER_SECOND = 1000;
-export const MS_PER_MINUTE = 60 * MS_PER_SECOND;
-export const MS_PER_HOUR = 60 * MS_PER_MINUTE;
-export const MS_PER_DAY = 24 * MS_PER_HOUR;
-export const MS_PER_WEEK = 7 * MS_PER_DAY;
+export const MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND;
+export const MS_PER_HOUR = MINUTES_PER_HOUR * MS_PER_MINUTE;
+export const MS_PER_DAY = HOURS_PER_DAY * MS_PER_HOUR;
+export const MS_PER_WEEK = DAYS_PER_WEEK * MS_PER_DAY;
 
 // ---- Git & GitHub -----------------------------------------------------------
 
@@ -108,7 +134,13 @@ export const BOT_SUFFIX = '[bot]';
 export const prId = (number: number) => `#${number}`;
 export const shortSha = (oid: string) => oid.slice(0, SHORT_SHA_LENGTH);
 
+/** Lengths of the leading parts of an ISO timestamp, by the shape of the part. */
+export const ISO_DATE_LENGTH = 'YYYY-MM-DD'.length;
+export const ISO_MINUTE_LENGTH = 'YYYY-MM-DDTHH:MM'.length;
+/** Where "MM-DD" starts in an ISO date. */
+export const ISO_MONTH_DAY_OFFSET = 'YYYY-'.length;
+
 /** "2026-09-28" from an ISO timestamp. */
-export const isoDate = (iso: string) => iso.slice(0, 'YYYY-MM-DD'.length);
+export const isoDate = (iso: string) => iso.slice(0, ISO_DATE_LENGTH);
 /** "2026-09-28 14:21" from an ISO timestamp. */
-export const isoMinute = (iso: string) => iso.slice(0, 'YYYY-MM-DDTHH:MM'.length).replace('T', ' ');
+export const isoMinute = (iso: string) => iso.slice(0, ISO_MINUTE_LENGTH).replace('T', ' ');

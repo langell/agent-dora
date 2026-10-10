@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto';
 import { fileMatcher, type Config } from './config.js';
-import { DurabilityStatus, MS_PER_DAY, UnavailableReason } from './constants.js';
+import { DurabilityStatus, MS_PER_DAY, UnavailableReason, type ChangeKind } from './constants.js';
 import * as g from './git.js';
 import type { Durability } from './types.js';
 
 /** A change as durability sees it: the commit that landed it on the branch, and when. */
 export interface LandedChange {
+  /** PR or commit: the same commit can carry different lines in each mode. */
+  kind: ChangeKind;
   /** The PR's merge or squash commit, or in commit mode the commit itself. */
   oid: string | null;
   landedAt: string;
@@ -20,6 +23,20 @@ export interface ChangeLines {
 export interface PrCommits {
   commitCount: number;
   commits: { message: string }[];
+}
+
+/** Hex digits of the settings hash in a cache key; plenty to tell settings apart. */
+const KEY_HASH_LENGTH = 12;
+
+/**
+ * Cache key for a measurement. Besides the commit and window, it covers everything
+ * else that changes the result: the change kind (a rebase-merged PR's last commit
+ * carries the whole PR in PR mode, but only itself in commit mode), the branch it's
+ * measured against, and the ignored files.
+ */
+export function durabilityKey(oid: string, kind: ChangeKind, ref: string, cfg: Config): string {
+  const scope = createHash('sha1').update(JSON.stringify({ kind, ref, ignoreFiles: cfg.ignoreFiles })).digest('hex').slice(0, KEY_HASH_LENGTH);
+  return `${oid}:${cfg.windowDays}:${scope}`;
 }
 
 export interface DurabilityCache {
@@ -87,7 +104,7 @@ export async function measureDurability(
   const due = new Date(Date.parse(change.landedAt) + cfg.windowDays * MS_PER_DAY);
   if (due > now) return { status: DurabilityStatus.Pending, baseline: 0, surviving: 0 };
 
-  const key = `${oid}:${cfg.windowDays}`;
+  const key = durabilityKey(oid, change.kind, ref, cfg);
   const cached = cache?.get(key);
   if (cached) return measured(cached.baseline, cached.surviving);
 

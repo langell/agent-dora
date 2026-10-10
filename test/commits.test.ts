@@ -69,6 +69,9 @@ test('commit mode: direct commits, a branch merge, reverts and Caused-by', async
   const f = byId.get(buggy.slice(0, 7))!;
   assert.deepEqual(f.rework.map((e) => e.kind), ['bug']);
   assert.equal(f.durable, false);
+
+  // The revert and the fix are remedial; nothing else is.
+  assert.deepEqual(changes.filter((x) => x.remedial).map((x) => x.title).sort(), ['Fix f', 'Revert "Add c"']);
 });
 
 test('directCommitCount and chooseUnit', () => {
@@ -95,7 +98,10 @@ test('store migrates 0.1.x snapshots', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'agent-dora-db-')), 'cache.db');
   new Store(path).close();
   const db = new DatabaseSync(path);
-  const old = { repo: 'o/r', defaultBranch: 'main', collectedAt: '2026-01-01T00:00:00Z', since: '2025-07-01T00:00:00Z', windowDays: 21, survivalThreshold: 0.7, openPrs: [], prs: [{ number: 5, title: 't' }] };
+  const old = {
+    repo: 'o/r', defaultBranch: 'main', collectedAt: '2026-01-01T00:00:00Z', since: '2025-07-01T00:00:00Z', windowDays: 21, survivalThreshold: 0.7, openPrs: [],
+    prs: [{ number: 5, title: 't', durability: { status: 'unavailable', baseline: 0, surviving: 0, reason: 'no measurable added lines' } }],
+  };
   db.prepare('INSERT INTO snapshots (repo, collected_at, data) VALUES (?, ?, ?)').run('o/r', old.collectedAt, JSON.stringify(old));
   db.close();
   const snap = new Store(path).loadSnapshot('o/r')!;
@@ -104,4 +110,6 @@ test('store migrates 0.1.x snapshots', () => {
   assert.deepEqual(snap.notes, []);
   assert.equal(snap.changes[0]!.id, '#5');
   assert.equal(snap.changes[0]!.kind, 'pr');
+  assert.equal(snap.changes[0]!.remedial, false);
+  assert.equal(snap.changes[0]!.durability.reason, 'no-measurable-lines', 'old prose reasons become codes');
 });

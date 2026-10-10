@@ -17,21 +17,26 @@ It works whether your team merges pull requests or pushes straight to a branch, 
 | Metric | Definition |
 |---|---|
 | **Durable changes / week** | The headline metric. Changes that, 21 days after landing, were not reverted or reworked **and** still have ≥70% of their added lines on the branch. |
+| **Surviving lines / week** | Added lines still on the branch 21 days later. Shown next to the headline so splitting work into more, smaller changes can't inflate it unnoticed. |
 | **Durable rate** | Share of matured changes that were durable. |
-| **Line churn** | Share of added lines gone 21 days after merge, measured with `git blame` at merge time and at merge + 21 days. |
+| **Line churn** | Share of all added lines gone 21 days after merge, measured with `git blame` at merge time and at merge + 21 days. Big changes weigh more. |
+| **Lines kept (p50)** | The median change's share of lines kept. Every change weighs the same, so read it next to churn. |
 | **Change failure rate** | Matured changes that were reverted, reworked, or blamed for a bug within the window. |
+| **Failing early** | Changes still inside their window that were already reverted or reworked. |
 | **Lead time (p50)** | First commit to merge. |
-| **Time to first review (p50)** | PR opened to first review by someone other than the author (PR mode only). |
-| **Size (p50)** | Lines added plus deleted. |
-| **Awaiting review** | Open, non-draft PRs that nobody has reviewed yet. With agents in the loop, review is usually the bottleneck. |
+| **Time to first review (p50)** | PR opened to the first review by a person other than the author (PR mode only). Reviews by AI review bots don't count. |
+| **Size (p50)** | Lines added plus deleted, excluding `ignoreFiles`. |
+| **Awaiting review** | Open, non-draft PRs that no person has reviewed yet. With agents in the loop, review is usually the bottleneck. |
 
-A change **matures** once its durability window has passed. Until then it shows as *Maturing* and doesn't count toward rates. The window and threshold are configurable.
+A change **matures** once its durability window has passed. Until then it shows as *Maturing* and doesn't count toward rates. A change that is reverted or reworked inside its window shows as *Not durable* straight away, but still only counts toward rates once its window has passed, so recent periods aren't skewed by failures being known before successes. The window and threshold are configurable.
+
+**Fixes and reverts** (changes that revert or fix earlier ones) are counted, but left out of every durability metric: a revert is not durable output, and counting it would make every failure add to throughput.
 
 ### PRs or commits
 
 A *change* is either a merged pull request or a commit on the branch:
 
-- **`--unit prs`**: each PR merged into the branch is one change.
+- **`--unit prs`**: each PR merged into the branch is one change. PRs are selected by merge date, so a PR opened long ago but merged in the period counts.
 - **`--unit commits`**: each commit on the branch's first-parent history is one change. A branch merged without a PR counts as one change carrying all its commits. Use this for solo or push-to-main repos.
 - **`--unit auto`** (default): uses commits when more changes land directly on the branch than through PRs, and says so in the report.
 
@@ -92,14 +97,14 @@ Each run also writes the summary table to the job summary.
 
 In order of precedence:
 
-1. **Label.** `ai:agent`, `ai:assisted` or `ai:none` on the PR always wins. Use these to correct misclassifications; the label action never overwrites a label a person set.
-2. **Agent.** The PR author is a known agent account, or the head branch starts with an agent prefix (`claude/`, `codex/`, `copilot/`, `cursor/`, `devin/`…).
-3. **Assisted.** A commit message or the PR body matches an AI marker, such as `Co-Authored-By: Claude …` or `Generated with Claude Code`.
+1. **Label.** `ai:agent`, `ai:assisted` or `ai:none` on the PR always wins. Use these to correct misclassifications; the label action never overwrites a label a person set. If labels of different classes contradict each other, they're all ignored and the reason says so.
+2. **Agent.** The PR author is a known agent account, or the head branch starts with an agent prefix (`codex/`, `copilot/`, `devin/`, `jules/`, `openhands/`). `claude/` and `cursor/` aren't in the defaults because interactive, person-driven tools create branches with those prefixes too; add them to `agentBranchPrefixes` if your team only uses them for autonomous runs.
+3. **Assisted.** A commit message or the PR body matches an AI marker, such as a `Co-Authored-By` trailer for Copilot, Cursor or Codex, Claude's `noreply@anthropic.com` address, or `Generated with Claude Code`. Agents that share a name with people (Claude, Devin, Jules, Amp) are matched by their address, not their name, so a human co-author named Devin doesn't count.
 4. **Human.** Everything else.
 
 In commit mode there are no labels or PR authors: a commit is **agent** if its git author is a known agent (e.g. `Copilot`), **assisted** if it or any commit it merged has an AI trailer, and **human** otherwise.
 
-Dependency bots (Dependabot, Renovate…) are excluded from all metrics.
+Dependency bots (Dependabot, Renovate…) are excluded from all metrics. AI review bots (Copilot review, CodeRabbit…, see `botReviewers`) don't count as a first review.
 
 ## Linking fixes to the changes they fix
 
@@ -120,12 +125,14 @@ Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults;
   "branch": "main",
   "windowDays": 21,
   "survivalThreshold": 0.7,
+  "minSurvivalLines": 5,
   "sinceDays": 180,
   "labels": { "rework": ["hotfix", "rework", "regression", "follow-up"] },
   "agentBranchPrefixes": ["claude/", "codex/", "copilot/", "bot/"],
   "agentAuthors": ["Copilot", "claude", "my-internal-agent"],
   "assistedPatterns": ["Co-Authored-By:.*\\b(Claude|Copilot|Cursor)\\b"],
   "ignoreAuthors": ["dependabot", "renovate"],
+  "botReviewers": ["copilot-pull-request-reviewer", "coderabbitai"],
   "ignoreFiles": ["**/package-lock.json", "**/generated/**"]
 }
 ```
@@ -137,14 +144,14 @@ See [`src/config.ts`](src/config.ts) for every option and its default.
 For each change:
 
 1. Find the commits on the branch that carry the change's lines: the squash commit, the rebased commits, or every commit merged by a merge commit (in commit mode, the commit itself, or everything a merge brought in).
-2. Run `git blame -w` at the merge commit to count the lines those commits added (the baseline). Lockfiles, build output and other `ignoreFiles` are skipped.
-3. Run `git blame -w` again at the last default-branch commit before *merge + window*, and count how many of those lines are still attributed to the PR's commits. Renamed files are followed.
-4. Survival = surviving ÷ baseline.
+2. Run `git blame -w -M` at the merge commit to count the lines those commits added (the baseline). Lockfiles, build output and other `ignoreFiles` are skipped.
+3. Run `git blame -w -M` again at the last default-branch commit before *merge + window*, and count how many of those lines are still attributed to the PR's commits. Renamed files are followed, and lines moved within a file keep their author.
+4. Survival = surviving ÷ baseline. Changes adding fewer than `minSurvivalLines` (default 5) measurable lines are judged on reverts and rework alone, since a single later edit would swing their share.
 
 Known limits:
 
 - Lines moved to a *different* file count as churned.
-- Whitespace-only edits don't count as churn.
+- Whitespace-only edits and lines moved within a file don't count as churn.
 - PRs with more than 100 commits are only partly read.
 - PRs that only delete lines have nothing to churn, so they're judged on reverts and rework alone.
 

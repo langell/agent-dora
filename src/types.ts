@@ -1,4 +1,4 @@
-import type { AuthorClass, ChangeKind, ClassSource, DurabilityStatus, ReworkKind, UnavailableReason, Unit } from './constants.js';
+import type { AuthorClass, ChangeKind, ClassSource, DurabilityStatus, ReviewState, ReworkKind, ReworkSourceKind, UnavailableReason, Unit } from './constants.js';
 
 export type { AuthorClass, ClassKey, ReworkKind, Unit } from './constants.js';
 
@@ -11,6 +11,11 @@ export interface PrCommit {
 export interface PrReview {
   submittedAt: string;
   author: string | null;
+  /** GitHub reports the reviewer as a bot account (Copilot review, CodeRabbit...). */
+  isBot: boolean;
+  state: ReviewState;
+  /** The review left a written body or inline comments. */
+  commented: boolean;
 }
 
 /** A pull request as fetched from GitHub, before any analysis. */
@@ -21,6 +26,7 @@ export interface RawPr {
   url: string;
   author: string | null;
   createdAt: string;
+  updatedAt: string;
   mergedAt: string | null;
   isDraft: boolean;
   headRefName: string;
@@ -41,12 +47,21 @@ export interface RawIssue {
   createdAt: string;
 }
 
+/** What showed that a change needed fixing: a PR, a commit, or a bug issue. */
+export type ReworkSource =
+  | { kind: typeof ReworkSourceKind.Pr; number: number }
+  | { kind: typeof ReworkSourceKind.Commit; oid: string }
+  | { kind: typeof ReworkSourceKind.Issue; number: number };
+
 /** Evidence that a change needed fixing after it shipped. */
 export interface ReworkEvent {
   /** PR number or full commit SHA of the change that needed fixing. */
   target: number | string;
   kind: ReworkKind;
   at: string;
+  /** Where the evidence came from. Missing in snapshots from before 0.3. */
+  from?: ReworkSource;
+  /** `from` as shown to users: "#12", a short SHA, or "issue #5". */
   source: string;
 }
 
@@ -74,14 +89,20 @@ export interface ChangeRecord {
   createdAt: string;
   mergedAt: string;
   firstCommitAt: string | null;
+  /** First review by a person other than the author; bot reviews don't count. */
   firstReviewAt: string | null;
   leadTimeHours: number | null;
   reviewWaitHours: number | null;
   size: number;
   rework: ReworkEvent[];
   durability: Durability;
-  /** null until the durability window has elapsed. */
+  /**
+   * false as soon as the change is reverted or reworked, even inside its window;
+   * true only once the window has elapsed; null while it can't be known yet.
+   */
   durable: boolean | null;
+  /** The change reverts or fixes an earlier one, so it doesn't count as durable output. */
+  remedial: boolean;
 }
 
 export interface OpenPrRecord {

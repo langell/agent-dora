@@ -27,42 +27,53 @@ export function isBotLogin(login: string): boolean {
   return login.toLowerCase().endsWith(BOT_SUFFIX);
 }
 
+const inList = (login: string, list: string[]) => {
+  const a = normLogin(login);
+  return list.some((x) => normLogin(x) === a);
+};
+
 export function isIgnoredAuthor(author: string | null, cfg: Config): boolean {
-  if (!author) return false;
-  const a = normLogin(author);
-  return cfg.ignoreAuthors.some((x) => normLogin(x) === a);
+  return !!author && inList(author, cfg.ignoreAuthors);
+}
+
+/**
+ * A review by a person other than the PR's author. AI review bots don't count: with
+ * one installed, every PR would look reviewed within minutes.
+ */
+export function isHumanReview(review: { author: string | null; isBot: boolean }, prAuthor: string | null, cfg: Config): boolean {
+  const who = review.author;
+  if (!who || review.isBot || isBotLogin(who)) return false;
+  if (prAuthor && normLogin(who) === normLogin(prAuthor)) return false;
+  return !inList(who, cfg.botReviewers) && !inList(who, cfg.agentAuthors);
 }
 
 /**
  * Decides who wrote a PR, in precedence order:
- * 1. an explicit label (`ai:agent`, `ai:assisted`, `ai:none`) always wins;
+ * 1. an explicit label (`ai:agent`, `ai:assisted`, `ai:none`) wins, unless labels
+ *    of different classes contradict each other, in which case they're all ignored;
  * 2. an agent login or agent branch prefix means the agent opened the PR -> agent;
  * 3. an AI co-author trailer or tool marker in commits or body -> assisted;
  * 4. otherwise -> human.
  */
 export function classify(pr: Classifiable, cfg: Config): Classification {
   const labels = new Set(pr.labels.map((l) => l.toLowerCase()));
-  for (const cls of AUTHOR_CLASSES) {
+  const hits = AUTHOR_CLASSES.flatMap((cls) => {
     const hit = cfg.labels[cls].find((l) => labels.has(l.toLowerCase()));
-    if (hit) return { authorClass: cls, source: ClassSource.Label, reason: `label ${hit}` };
-  }
+    return hit ? [{ cls, hit }] : [];
+  });
+  if (hits.length === 1) return { authorClass: hits[0]!.cls, source: ClassSource.Label, reason: `label ${hits[0]!.hit}` };
+  const note = hits.length > 1 ? `; ignored conflicting labels ${hits.map((h) => h.hit).join(', ')}` : '';
+  const decided = (authorClass: AuthorClass, source: ClassSource, reason: string): Classification => ({ authorClass, source, reason: reason + note });
 
-  if (pr.author) {
-    const a = normLogin(pr.author);
-    if (cfg.agentAuthors.some((x) => normLogin(x) === a)) {
-      return { authorClass: AuthorClass.Agent, source: ClassSource.Author, reason: `author ${pr.author}` };
-    }
-  }
+  if (pr.author && inList(pr.author, cfg.agentAuthors)) return decided(AuthorClass.Agent, ClassSource.Author, `author ${pr.author}`);
   const prefix = cfg.agentBranchPrefixes.find((p) => pr.headRefName.startsWith(p));
-  if (prefix) return { authorClass: AuthorClass.Agent, source: ClassSource.Branch, reason: `branch ${prefix}*` };
+  if (prefix) return decided(AuthorClass.Agent, ClassSource.Branch, `branch ${prefix}*`);
 
   const patterns = cfg.assistedPatterns.map((p) => new RegExp(p, 'im'));
   const texts = [pr.body, ...pr.commits.map((c) => c.message)];
   for (const re of patterns) {
-    if (texts.some((t) => re.test(t))) {
-      return { authorClass: AuthorClass.Assisted, source: ClassSource.Trailer, reason: `matched /${re.source}/` };
-    }
+    if (texts.some((t) => re.test(t))) return decided(AuthorClass.Assisted, ClassSource.Trailer, `matched /${re.source}/`);
   }
 
-  return { authorClass: AuthorClass.Human, source: ClassSource.None, reason: 'no AI signal' };
+  return decided(AuthorClass.Human, ClassSource.None, 'no AI signal');
 }

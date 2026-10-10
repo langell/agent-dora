@@ -23,6 +23,11 @@ export interface Config {
   windowDays: number;
   /** Minimum share of a PR's added lines that must survive the window. */
   survivalThreshold: number;
+  /**
+   * Changes adding fewer measurable lines than this are judged on reverts and rework
+   * alone, since one later edit would swing their survival share wildly.
+   */
+  minSurvivalLines: number;
   /** How far back to collect merged PRs. */
   sinceDays: number;
   /** Labels that mark a PR's author class (the first is the one `label` applies), plus: */
@@ -40,6 +45,11 @@ export interface Config {
   assistedPatterns: string[];
   /** PR authors excluded from all metrics (dependency bots and other automation). */
   ignoreAuthors: string[];
+  /**
+   * Reviewer logins that are automated (AI review bots). Their reviews don't count as a
+   * first review. Accounts GitHub reports as bots, and `agentAuthors`, are always excluded.
+   */
+  botReviewers: string[];
   /** Globs of files excluded from durability measurement. */
   ignoreFiles: string[];
 }
@@ -48,6 +58,7 @@ export const DEFAULT_CONFIG: Config = {
   unit: UnitSetting.Auto,
   windowDays: 21,
   survivalThreshold: 0.7,
+  minSurvivalLines: 5,
   sinceDays: 180,
   labels: {
     [AuthorClass.Agent]: [CLASS_LABELS[AuthorClass.Agent]],
@@ -68,13 +79,29 @@ export const DEFAULT_CONFIG: Config = {
     'openhands-agent',
     'google-labs-jules',
   ],
-  agentBranchPrefixes: ['claude/', 'codex/', 'copilot/', 'cursor/', 'devin/', 'jules/', 'openhands/'],
+  // Not `claude/` or `cursor/`: interactive, person-driven tools also create branches with
+  // those prefixes, so they'd mark assisted work as agent work. Add them if your team only
+  // uses them for autonomous runs.
+  agentBranchPrefixes: ['codex/', 'copilot/', 'devin/', 'jules/', 'openhands/'],
   assistedPatterns: [
-    'Co-Authored-By:.*\\b(Claude|Copilot|Cursor|Codex|Devin|Gemini|Aider|Windsurf|Cline|Amp|Jules)\\b',
+    // Tool names that are never a person's name...
+    'Co-Authored-By:.*\\b(Copilot|Cursor|Codex|Gemini|Aider|Windsurf)\\b',
+    // ...and, for agents named like people (Claude, Devin, Jules, Amp), their addresses.
     'noreply@anthropic\\.com',
+    'Co-Authored-By:.*<[^>]*(devin-ai-integration|google-labs-jules|@ampcode\\.com)',
     'Generated with \\[?Claude Code',
   ],
   ignoreAuthors: ['dependabot', 'renovate', 'github-actions', 'pre-commit-ci', 'snyk-bot'],
+  botReviewers: [
+    'copilot-pull-request-reviewer',
+    'coderabbitai',
+    'gemini-code-assist',
+    'sourcery-ai',
+    'greptile-apps',
+    'ellipsis-dev',
+    'qodo-merge-pro',
+    'cubic-dev-ai',
+  ],
   ignoreFiles: [
     '**/package-lock.json',
     '**/pnpm-lock.yaml',
@@ -123,6 +150,9 @@ export function loadConfig(repoPath: string, overrides: Partial<Config> = {}): C
     throw new Error(`unit must be one of ${units.join(', ')}, got "${merged.unit}"`);
   }
   if (!(merged.windowDays > 0)) throw new Error(`windowDays must be positive, got ${merged.windowDays}`);
+  if (!(Number.isInteger(merged.minSurvivalLines) && merged.minSurvivalLines >= 0)) {
+    throw new Error(`minSurvivalLines must be a whole number, got ${merged.minSurvivalLines}`);
+  }
   return merged;
 }
 

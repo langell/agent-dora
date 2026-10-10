@@ -69,7 +69,7 @@ function lineChart(host) {
   const step = Math.max(1, Math.ceil(weeks.length / Math.max(2, Math.floor(iw / LINE.minLabelGap))));
   weeks.forEach((w, i) => {
     // "MM-DD" of the week's Monday.
-    if (i % step === 0) el('text', { x: x(i), y: H - 8, 'text-anchor': 'middle' }, svg).textContent = w.week.slice('YYYY-'.length);
+    if (i % step === 0) el('text', { x: x(i), y: H - 8, 'text-anchor': 'middle' }, svg).textContent = w.week.slice(UI.monthDayOffset);
   });
   const ends = [];
   for (const c of UI.classes) {
@@ -123,7 +123,8 @@ function barChart(host, bar) {
 
 function statusCell(p) {
   const style = UI.statusStyle[p.status];
-  const title = p.durability.reason ? ' title="' + esc(p.durability.reason) + '"' : '';
+  const reason = p.durability.reason && (UI.reasonNames[p.durability.reason] || p.durability.reason);
+  const title = reason ? ' title="' + esc(reason) + '"' : '';
   return '<span class="' + style.className + '"' + title + '>' + style.icon + ' ' + UI.statusNames[p.status] + '</span>';
 }
 
@@ -140,7 +141,7 @@ function changeTable() {
         const rw = p.rework.map((e) => e.kind + ' ' + esc(e.source)).join(', ');
         return '<tr><td><a href="' + esc(p.url) + '">' + esc(p.id) + '</a> ' + esc(p.title) + '</td>' +
           '<td><span class="badge" title="' + esc(p.classReason) + '">' + swatch(p.authorClass) + UI.classNames[p.authorClass] + '</span></td>' +
-          '<td class="nw">' + p.mergedAt.slice(0, 'YYYY-MM-DD'.length) + '</td><td class="n">' + p.size + '</td><td class="n">' + kept + '</td>' +
+          '<td class="nw">' + p.mergedAt.slice(0, UI.isoDateLength) + '</td><td class="n">' + p.size + '</td><td class="n">' + kept + '</td>' +
           '<td>' + statusCell(p) + '</td><td class="hint">' + rw + '</td></tr>';
       }).join('') + '</tbody>';
   };

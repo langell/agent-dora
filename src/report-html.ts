@@ -6,9 +6,13 @@ import {
   CLASS_NAMES,
   ChangeStatus,
   DurabilityStatus,
+  ISO_DATE_LENGTH,
+  ISO_MONTH_DAY_OFFSET,
   isoMinute,
   MS_PER_HOUR,
+  prId,
   TOOL_NAME,
+  UNAVAILABLE_REASON_NAMES,
   type AuthorClass,
 } from './constants.js';
 import type { ClassStats, Report } from './metrics.js';
@@ -37,6 +41,7 @@ const STATUS_STYLE: Record<ChangeStatus, { icon: string; className: string }> = 
   [ChangeStatus.Failed]: { icon: '✕', className: 'status-bad' },
   [ChangeStatus.Pending]: { icon: '◷', className: 'hint' },
   [ChangeStatus.Unknown]: { icon: '?', className: 'hint' },
+  [ChangeStatus.Remedial]: { icon: '↺', className: 'hint' },
 };
 
 /** The per-author bar charts: which stat each plots, and its tooltip detail per class. */
@@ -66,7 +71,7 @@ function reviewQueue(r: Report): string {
   if (!waiting.length) return '<tr><td class="hint">Nothing waiting.</td></tr>';
   const age = (iso: string) => duration((Date.parse(r.collectedAt) - Date.parse(iso)) / MS_PER_HOUR);
   return `<thead><tr><th>PR</th><th>Author</th><th class="n">Waiting</th></tr></thead><tbody>${waiting
-    .map((p) => `<tr><td><a href="${esc(p.url)}">#${p.number}</a> ${esc(p.title)}</td><td><span class="badge">${swatch(p.authorClass)}${CLASS_NAMES[p.authorClass]}</span></td><td class="n">${age(p.createdAt)}</td></tr>`)
+    .map((p) => `<tr><td><a href="${esc(p.url)}">${prId(p.number)}</a> ${esc(p.title)}</td><td><span class="badge">${swatch(p.authorClass)}${CLASS_NAMES[p.authorClass]}</span></td><td class="n">${age(p.createdAt)}</td></tr>`)
     .join('')}</tbody>`;
 }
 
@@ -81,7 +86,10 @@ export function renderHtml(r: Report): string {
     seriesVars: Object.fromEntries(AUTHOR_CLASSES.map((c) => [c, `var(${seriesVar(c)})`])),
     statusNames: CHANGE_STATUS_NAMES,
     statusStyle: STATUS_STYLE,
+    reasonNames: UNAVAILABLE_REASON_NAMES,
     measured: DurabilityStatus.Measured,
+    isoDateLength: ISO_DATE_LENGTH,
+    monthDayOffset: ISO_MONTH_DAY_OFFSET,
     nouns: n,
     empty: EMPTY_VALUE,
     maxRows: MAX_TABLE_ROWS,

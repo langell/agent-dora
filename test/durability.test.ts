@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DEFAULT_CONFIG } from '../src/config.js';
-import { measureDurability, prLines, type PrCommits } from '../src/durability.js';
+import { fileMatcher } from '../src/config.js';
+import { diffSize } from '../src/git.js';
+import { durabilityKey, measureDurability, prLines, type PrCommits } from '../src/durability.js';
 import { DAY, lines, T0, TempRepo } from './helpers.js';
 
 /** Measures a PR merged as `oid`, the way PR mode does. */
 const measurePr = (dir: string, oid: string, landedAt: string, pr: PrCommits, now: Date, cache?: Parameters<typeof measureDurability>[6]) =>
-  measureDurability(dir, 'main', { oid, landedAt }, (o) => prLines(dir, pr, o), DEFAULT_CONFIG, now, cache);
+  measureDurability(dir, 'main', { kind: 'pr', oid, landedAt }, (o) => prLines(dir, pr, o), DEFAULT_CONFIG, now, cache);
 
 test('measures line survival across squash, merge-commit and rebase merges', async () => {
   const r = new TempRepo();
@@ -69,11 +71,35 @@ test('uses the cache instead of re-running blame', async () => {
     set: () => assert.fail('should not write'),
   };
   // A cache hit must not look up the change's commits at all.
-  const noLookup = await measureDurability(r.dir, 'main', { oid, landedAt: new Date(T0).toISOString() }, () => assert.fail('looked up lines'), DEFAULT_CONFIG, new Date(T0 + 40 * DAY), cache);
+  const noLookup = await measureDurability(r.dir, 'main', { kind: 'pr', oid, landedAt: new Date(T0).toISOString() }, () => assert.fail('looked up lines'), DEFAULT_CONFIG, new Date(T0 + 40 * DAY), cache);
   assert.equal(noLookup.status, 'measured');
   const d = await measurePr(r.dir, oid, new Date(T0).toISOString(), { commitCount: 1, commits: [{ message: 'a' }] }, new Date(T0 + 40 * DAY), cache);
   assert.deepEqual(d, { status: 'measured', baseline: 7, surviving: 3 });
-  assert.deepEqual(hits, [`${oid}:21`, `${oid}:21`]);
+  const key = durabilityKey(oid, 'pr', 'main', DEFAULT_CONFIG);
+  assert.deepEqual(hits, [key, key]);
+});
+
+test('cache keys separate change kinds, branches and ignored files', () => {
+  const key = durabilityKey('abc', 'pr', 'main', DEFAULT_CONFIG);
+  assert.match(key, /^abc:21:[0-9a-f]{12}$/);
+  assert.notEqual(key, durabilityKey('abc', 'commit', 'main', DEFAULT_CONFIG));
+  assert.notEqual(key, durabilityKey('abc', 'pr', 'origin/release', DEFAULT_CONFIG));
+  assert.notEqual(key, durabilityKey('abc', 'pr', 'main', { ...DEFAULT_CONFIG, ignoreFiles: [] }));
+  assert.notEqual(key, durabilityKey('abc', 'pr', 'main', { ...DEFAULT_CONFIG, windowDays: 14 }));
+});
+
+test('lines moved within a file still count as surviving', async () => {
+  const r = new TempRepo();
+  r.write('README.md', ['hi']);
+  r.commit(T0, 'init');
+  const block = (name: string) => [`function ${name}ComputeEverything(input) {`, `  const total = input.reduce((a, b) => a + b, 0);`, `  return total * ${name.length};`, '}'];
+  r.write('src/a.js', [...block('alpha'), ...block('beta')]);
+  const oid = r.commit(T0 + DAY, 'add a');
+  // Swap the two functions.
+  r.write('src/a.js', [...block('beta'), ...block('alpha')]);
+  r.commit(T0 + 3 * DAY, 'reorder');
+  const d = await measurePr(r.dir, oid, new Date(T0 + DAY).toISOString(), { commitCount: 1, commits: [{ message: 'add a' }] }, new Date(T0 + 40 * DAY));
+  assert.deepEqual(d, { status: 'measured', baseline: 8, surviving: 8 });
 });
 
 test('ignores lockfiles and generated files', async () => {
@@ -85,4 +111,6 @@ test('ignores lockfiles and generated files', async () => {
   const oid = r.commit(T0 + DAY, 'deps');
   const d = await measurePr(r.dir, oid, new Date(T0 + DAY).toISOString(), { commitCount: 1, commits: [{ message: 'deps' }] }, new Date(T0 + 40 * DAY));
   assert.deepEqual(d, { status: 'measured', baseline: 2, surviving: 2 });
+  assert.equal(await diffSize(r.dir, `${oid}~1`, oid), 52);
+  assert.equal(await diffSize(r.dir, `${oid}~1`, oid, fileMatcher(DEFAULT_CONFIG.ignoreFiles)), 2, 'size skips ignored files too');
 });

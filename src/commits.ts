@@ -1,10 +1,11 @@
 import { classify } from './classify.js';
-import { ChangeKind, githubCommitUrl, MS_PER_HOUR, shortSha } from './constants.js';
+import { fileMatcher } from './config.js';
+import { ChangeKind, githubCommitUrl, MS_PER_HOUR, ReworkSourceKind, shortSha } from './constants.js';
 import { measureDurability } from './durability.js';
 import * as g from './git.js';
 import { isDurable } from './metrics.js';
 import type { ModeOptions } from './modes.js';
-import { causedByShas, findCommitRework } from './rework.js';
+import { causedByShas, findCommitRework, looksRemedial } from './rework.js';
 import type { ChangeRecord } from './types.js';
 import { GIT_CONCURRENCY, mapLimit, progress } from './util.js';
 
@@ -34,6 +35,9 @@ export async function commitChanges(
     resolve,
   );
 
+  const fixers = new Set(rework.flatMap((e) => (e.from?.kind === ReworkSourceKind.Commit ? [e.from.oid] : [])));
+  const ignored = fileMatcher(cfg.ignoreFiles);
+
   log(`Measuring durability of ${units.length} commits against ${ref}...`);
   const tick = progress(log, units.length);
   return mapLimit(units, GIT_CONCURRENCY, async ({ c, merged, owners }): Promise<ChangeRecord> => {
@@ -43,10 +47,10 @@ export async function commitChanges(
     );
     // The commits a change carries are already known here, so durability needn't look them up.
     const lines = async () => ({ owners, base: c.parents[0] ?? g.EMPTY_TREE });
-    const durability = await measureDurability(repoPath, ref, { oid: c.oid, landedAt: c.committedAt }, lines, cfg, now, cache);
+    const durability = await measureDurability(repoPath, ref, { kind: ChangeKind.Commit, oid: c.oid, landedAt: c.committedAt }, lines, cfg, now, cache);
     const firstCommit = Math.min(Date.parse(c.authoredAt), ...merged.map((m) => Date.parse(m.authoredAt)));
     const events = rework.filter((e) => e.target === c.oid);
-    const size = await g.diffSize(repoPath, c.parents[0] ?? g.EMPTY_TREE, c.oid);
+    const size = await g.diffSize(repoPath, c.parents[0] ?? g.EMPTY_TREE, c.oid, ignored);
     tick();
     return {
       kind: ChangeKind.Commit,
@@ -68,6 +72,7 @@ export async function commitChanges(
       rework: events,
       durability,
       durable: isDurable(c.committedAt, events, durability, cfg),
+      remedial: fixers.has(c.oid) || looksRemedial(c.message),
     };
   });
 }

@@ -1,9 +1,17 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { ChangeKind, ClassSource, prId, Unit } from './constants.js';
+import { ChangeKind, ClassSource, prId, UnavailableReason, Unit } from './constants.js';
 import type { DurabilityCache } from './durability.js';
 import type { ChangeRecord, Snapshot } from './types.js';
+
+/** Snapshots before 0.3 stored the user-facing wording of an unavailable reason, not its code. */
+const LEGACY_REASONS: Record<string, UnavailableReason> = {
+  'no merge commit': UnavailableReason.NoMergeCommit,
+  'merge commit not in local history (use fetch-depth: 0)': UnavailableReason.NotInHistory,
+  'not merged into the default branch': UnavailableReason.NotOnBranch,
+  'no measurable added lines': UnavailableReason.NoMeasurableLines,
+};
 
 /**
  * SQLite store: the latest snapshot per repo, plus a durability cache.
@@ -43,6 +51,11 @@ export class Store {
       snap.unit ??= Unit.Prs;
       snap.notes ??= [];
       delete snap.prs;
+    }
+    for (const c of snap.changes) {
+      c.remedial ??= false;
+      const reason = c.durability.reason as string | undefined;
+      if (reason !== undefined && reason in LEGACY_REASONS) c.durability.reason = LEGACY_REASONS[reason];
     }
     return snap;
   }

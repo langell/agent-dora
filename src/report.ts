@@ -2,15 +2,13 @@
  * Report formatting and wording shared by the markdown summary (here) and the
  * HTML dashboard (`report-html.ts`).
  */
-import { ALL_CLASSES, CLASS_KEYS, CLASS_NAMES, isoDate, TOOL_NAME, Unit } from './constants.js';
+import { ALL_CLASSES, CLASS_KEYS, CLASS_NAMES, HOURS_PER_DAY, isoDate, MINUTES_PER_HOUR, TOOL_NAME, Unit } from './constants.js';
 import type { ClassStats, Report } from './metrics.js';
 
 /** Shown wherever a value can't be computed yet. */
 export const EMPTY_VALUE = '—';
 
 const PERCENT = 100;
-const MINUTES_PER_HOUR = 60;
-const HOURS_PER_DAY = 24;
 /** Durations under this many hours read better in hours than in days. */
 const SHOW_DAYS_AFTER_HOURS = 48;
 export const pct = (x: number | null) => (x === null ? EMPTY_VALUE : `${Math.round(x * PERCENT)}%`);
@@ -57,14 +55,19 @@ export function rows(r: Report): Row[] {
   const n = nouns(r.unit);
   return [
     { label: n.count, hint: `${n.count} on ${r.branch} in the period`, value: (s) => String(s.merged) },
+    { label: 'Fixes and reverts', hint: `${n.count} that revert or fix earlier ones; left out of every durability metric`, value: (s) => String(s.remedial) },
     { label: `Durable ${n.plural} / week`, hint: `Matured ${n.plural} that were not reverted or reworked and kept enough of their lines`, value: (s) => num(s.durablePerWeek) },
+    { label: 'Surviving lines / week', hint: `Added lines from matured ${n.plural} still there after ${r.windowDays} days`, value: (s) => num(s.survivingLinesPerWeek, 0) },
     { label: 'Durable rate', hint: `Share of matured ${n.plural} that were durable`, value: (s) => pct(s.durableRate) },
-    { label: 'Line churn', hint: 'Share of added lines gone by the end of the window', value: (s) => pct(s.churn) },
+    { label: 'Line churn', hint: 'Share of all added lines gone by the end of the window (big changes weigh more)', value: (s) => pct(s.churn) },
+    { label: 'Lines kept (p50)', hint: `Median share of a ${n.column.toLowerCase()}'s lines kept by the end of the window (every change weighs the same)`, value: (s) => pct(s.keptP50) },
     { label: 'Change failure rate', hint: `Matured ${n.plural} reverted, reworked or blamed for a bug within the window`, value: (s) => pct(s.changeFailureRate) },
+    { label: 'Failing early', hint: `${n.count} still inside the window that were already reverted or reworked`, value: (s) => String(s.failingEarly) },
     { label: 'Lead time (p50)', hint: `First commit to ${r.unit === Unit.Prs ? 'merge' : 'landing on the branch'}`, value: (s) => duration(s.leadTimeP50Hours) },
-    ...(r.unit === Unit.Prs ? [{ label: 'Time to first review (p50)', hint: 'PR opened to first review by someone else', value: (s: ClassStats) => duration(s.reviewWaitP50Hours) }] : []),
-    { label: n.size, hint: 'Lines added plus deleted', value: (s) => num(s.sizeP50, 0) },
-    { label: 'Open PRs awaiting review', hint: 'Non-draft open PRs with no review yet', value: (s) => String(s.awaitingReview) },
+    ...(r.unit === Unit.Prs ? [{ label: 'Time to first review (p50)', hint: 'PR opened to first review by a person other than the author (AI review bots excluded)', value: (s: ClassStats) => duration(s.reviewWaitP50Hours) }] : []),
+    { label: n.size, hint: 'Lines added plus deleted, excluding ignored files', value: (s) => num(s.sizeP50, 0) },
+    { label: 'Open PRs awaiting review', hint: 'Non-draft open PRs no person has reviewed yet', value: (s) => String(s.awaitingReview) },
+    { label: 'Not measurable', hint: `${n.count} whose durability couldn't be measured, e.g. missing history`, value: (s) => String(s.unknown) },
   ];
 }
 
