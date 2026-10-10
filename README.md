@@ -27,6 +27,12 @@ It works whether your team merges pull requests or pushes straight to a branch, 
 | **Time to first review (p50)** | PR opened to the first review by a person other than the author (PR mode only). Reviews by AI review bots don't count. |
 | **Size (p50)** | Lines added plus deleted, excluding `ignoreFiles`. |
 | **Awaiting review** | Open, non-draft PRs that no person has reviewed yet. With agents in the loop, review is usually the bottleneck. |
+| **Lead time to production (p50)** | First commit to the first production deployment containing the change. Needs [deployment data](#deployments-incidents-and-ai-spend). |
+| **Deploys / week** | Commits that went live in production. One commit deployed to several projects counts once. |
+| **Deploys followed by an incident** | DORA's change failure rate by deployment: share of deploys followed by an incident within 24 hours. Needs an incident tracker. |
+| **Time to restore (p50)** | Incident opened to resolved. |
+| **Escaped defects** | Changes an incident or production bug named as its cause. |
+| **AI spend / durable change** | AI spend over the matured period, divided by the agent and assisted changes from that period that held up. Also per tool, and per 1,000 surviving lines. |
 
 A change **matures** once its durability window has passed. Until then it shows as *Maturing* and doesn't count toward rates. A change that is reverted or reworked inside its window shows as *Not durable* straight away, but still only counts toward rates once its window has passed, so recent periods aren't skewed by failures being known before successes. The window and threshold are configurable.
 
@@ -84,7 +90,7 @@ Durability results are cached in `.agent-dora/cache.db` (SQLite). They can't cha
 
 ## GitHub Action
 
-**Nightly dashboard on GitHub Pages.** Copy [`examples/agent-dora.yml`](examples/agent-dora.yml) to `.github/workflows/`, then set Settings → Pages → Source to *GitHub Actions*:
+**Nightly dashboard on GitHub Pages.** Copy [`examples/agent-dora.yml`](examples/agent-dora.yml) to `.github/workflows/`, then set Settings → Pages → Source to *GitHub Actions*. The example also grants `deployments: read`, for lead time to production:
 
 ```yaml
 - uses: actions/checkout@v4
@@ -129,6 +135,41 @@ Dependency bots (Dependabot, Renovate…) are excluded from all metrics. AI revi
 - **Survival curve.** Share of lines left at each of `checkpointDays` (default 7 and 14) and at the end of the window. Each checkpoint adds a `git blame` per changed file; set `checkpointDays` to `[]` to skip it.
 - **How authorship was decided.** Counts per signal (label, agent account, branch prefix, trailer), so you can see how much rests on weaker signals.
 
+## Deployments, incidents and AI spend
+
+Each of these is optional and switches on when its data is available. A source that can't be read (a missing permission, a bad token) adds a note to the report instead of failing the run.
+
+**Deployments.** Read from GitHub Deployments, which Vercel, Netlify, Render and other hosts record through their GitHub integration, so there's usually nothing to set up. In GitHub Actions, add `deployments: read` to the workflow's permissions. Environments matching `deployments.environment` (default `^production`, case-insensitive) count as production. If your host doesn't record GitHub Deployments, point agent-dora at Vercel directly with `deployments.vercelProjects` and a `VERCEL_TOKEN`.
+
+**Incidents.** Set credentials for any of:
+
+| Tracker | Credentials | Settings |
+|---|---|---|
+| Linear | `LINEAR_API_KEY` | `incidents.linearLabels` (default `Bug`, `Incident`), `incidents.linearTeams` |
+| Jira | `JIRA_EMAIL`, `JIRA_API_TOKEN` | `incidents.jiraSite` (e.g. `acme.atlassian.net`), `incidents.jiraJql` |
+| PagerDuty | `PAGERDUTY_TOKEN` | `incidents.pagerdutyServices` |
+
+An incident that names its cause (`Caused-by: #123`, a commit SHA, or the PR or commit URL) fails that change and counts as an escaped defect. Every incident also counts against the production deploy that was live when it opened, if that deploy went live within `incidents.attributionHours` (default 24), which gives the deployment-based change failure rate.
+
+**AI spend.** From any of:
+
+- **Anthropic Admin API**: set `ANTHROPIC_ADMIN_KEY` (an admin key, `sk-ant-admin…`) to read Claude Code's estimated cost per person per day. Finished days are cached.
+- **Claude Code OpenTelemetry**: export Claude Code's metrics as OTLP JSON (for example with an OpenTelemetry Collector's file exporter) and list the file in `cost.files`. agent-dora sums `claude_code.cost.usage` per person per day.
+- **A CSV**, for any other tool (Cursor, Copilot, Devin billing exports): columns `date,tool,usd` and optionally `actor`, listed in `cost.files`.
+
+Spend is reported for the whole organization, but a report covers one repository. Limit it to the people who work here with `cost.actors`, or combine every repository's report with `rollup`, which counts shared spend and incidents once.
+
+In GitHub Actions, pass credentials as inputs from secrets:
+
+```yaml
+- uses: langell/agent-dora@v0
+  with:
+    anthropic-admin-key: ${{ secrets.ANTHROPIC_ADMIN_KEY }}
+    linear-api-key: ${{ secrets.LINEAR_API_KEY }}
+    pagerduty-token: ${{ secrets.PAGERDUTY_TOKEN }}
+    # also: vercel-token, jira-email, jira-api-token
+```
+
 ## Linking fixes to the changes they fix
 
 Reverts are detected automatically: `git revert` commits, GitHub's Revert button, and PRs titled `Revert "<title>"`. For other fixes, use either of these conventions (in commit mode, reference the commit SHA instead of `#123`, e.g. `Caused-by: 1a2b3c4`):
@@ -140,7 +181,7 @@ A fix only counts against a PR if it lands within that PR's durability window.
 
 ## Configuration
 
-Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults; `labels` and `tools` merge key by key. Unknown keys print a warning, and values of the wrong type stop the run with an error.
+Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults; `labels`, `tools`, `deployments`, `incidents` and `cost` merge key by key. Unknown keys print a warning, and values of the wrong type stop the run with an error.
 
 ```json
 {
@@ -160,7 +201,10 @@ Optional. Add `.agent-dora.json` to your repo root. Arrays replace the defaults;
   "tools": { "My Agent": "my-internal-agent" },
   "ignoreAuthors": ["dependabot", "renovate"],
   "botReviewers": ["copilot-pull-request-reviewer", "coderabbitai"],
-  "ignoreFiles": ["**/package-lock.json", "**/generated/**"]
+  "ignoreFiles": ["**/package-lock.json", "**/generated/**"],
+  "deployments": { "environment": "^production", "vercelProjects": [] },
+  "incidents": { "linearTeams": ["ENG"], "jiraSite": "acme.atlassian.net", "attributionHours": 24 },
+  "cost": { "files": ["ai-spend.csv"], "actors": ["alice@acme.dev", "bob@acme.dev"] }
 }
 ```
 
@@ -185,12 +229,6 @@ Known limits:
 ## Why not plain DORA?
 
 DORA still measures your delivery system well. What it can't tell you is whether agent output is *sticking*: a change can deploy cleanly and still be quietly rewritten two weeks later. Durable throughput counts only the changes that hold up, which makes it hard to game by shipping more, smaller or sloppier PRs. For the reasoning in more depth, see the [DORA research program](https://dora.dev) and its work on AI-assisted development.
-
-## Roadmap
-
-- AI cost per durable change (Claude Code OpenTelemetry, Anthropic Admin API)
-- Deployment data (GitHub Deployments, Vercel) for true deploy-based lead time
-- Escaped defects from incident trackers (Linear, Jira, PagerDuty)
 
 ## Development
 

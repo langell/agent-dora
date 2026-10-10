@@ -1,4 +1,19 @@
-import type { AuthorClass, ChangeKind, ClassSource, DurabilityStatus, ReviewDepth, ReviewState, ReworkKind, ReworkSourceKind, UnavailableReason, Unit } from './constants.js';
+import type {
+  AuthorClass,
+  ChangeKind,
+  ClassSource,
+  CostSource,
+  DeploySource,
+  DeployStatus,
+  DurabilityStatus,
+  IncidentSource,
+  ReviewDepth,
+  ReviewState,
+  ReworkKind,
+  ReworkSourceKind,
+  UnavailableReason,
+  Unit,
+} from './constants.js';
 
 export type { AuthorClass, ClassKey, ReworkKind, Unit } from './constants.js';
 
@@ -47,11 +62,51 @@ export interface RawIssue {
   createdAt: string;
 }
 
-/** What showed that a change needed fixing: a PR, a commit, or a bug issue. */
+/** What showed that a change needed fixing: a PR, a commit, a GitHub bug issue, or a tracker incident. */
 export type ReworkSource =
   | { kind: typeof ReworkSourceKind.Pr; number: number }
   | { kind: typeof ReworkSourceKind.Commit; oid: string }
-  | { kind: typeof ReworkSourceKind.Issue; number: number };
+  | { kind: typeof ReworkSourceKind.Issue; number: number }
+  | { kind: typeof ReworkSourceKind.Incident; source: IncidentSource; id: string };
+
+/** A deployment to production. */
+export interface Deployment {
+  source: DeploySource;
+  /** Environment name as the source reports it, e.g. "Production". */
+  environment: string;
+  sha: string;
+  createdAt: string;
+  /** When it went live; null unless it succeeded. */
+  readyAt: string | null;
+  status: DeployStatus;
+  url: string | null;
+}
+
+/** An incident or production bug from a tracker. */
+export interface Incident {
+  source: IncidentSource;
+  /** The tracker's own id, e.g. "ENG-123", "PROJ-45" or PagerDuty's incident number. */
+  id: string;
+  title: string;
+  url: string;
+  createdAt: string;
+  /** When it was resolved, if it has been. */
+  resolvedAt: string | null;
+  /** Title and description, searched for `Caused-by` references. */
+  text: string;
+}
+
+/** AI spend for one day, from one source. */
+export interface CostEntry {
+  source: CostSource;
+  /** "YYYY-MM-DD" (UTC). */
+  date: string;
+  /** Tool name matching `Config.tools`, e.g. "Claude". */
+  tool: string;
+  /** Who spent it (an email or login), when the source says. */
+  actor: string | null;
+  usd: number;
+}
 
 /** Evidence that a change needed fixing after it shipped. */
 export interface ReworkEvent {
@@ -114,6 +169,10 @@ export interface ChangeRecord {
   createdAt: string;
   mergedAt: string;
   firstCommitAt: string | null;
+  /** When the change first went live in production; null if not yet, or no deployment data. */
+  deployedAt: string | null;
+  /** First commit to production. */
+  deployLeadTimeHours: number | null;
   /** First review by a person other than the author; bot reviews don't count. */
   firstReviewAt: string | null;
   leadTimeHours: number | null;
@@ -157,6 +216,12 @@ export interface Snapshot {
   minSurvivalLines?: number;
   /** The repositories combined into this snapshot by `rollup`. */
   repos?: string[];
+  /** Production deployments in the period, oldest first. Missing when no deployment source is set up. */
+  deployments?: Deployment[];
+  /** Incidents from trackers in the period. */
+  incidents?: Incident[];
+  /** Daily AI spend in the period. */
+  costs?: CostEntry[];
   changes: ChangeRecord[];
   openPrs: OpenPrRecord[];
   /** Things the reader should know about how this data was collected. */

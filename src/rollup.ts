@@ -1,3 +1,4 @@
+import { incidentKey } from './constants.js';
 import type { Snapshot } from './types.js';
 
 /** Shown for the branch when combined repositories measured different branches. */
@@ -39,5 +40,16 @@ export function combineSnapshots(all: Snapshot[]): Snapshot {
     changes: snaps.flatMap((s) => s.changes.map((c) => ({ ...c, repo: s.repo }))),
     openPrs: snaps.flatMap((s) => s.openPrs.map((o) => ({ ...o, repo: s.repo }))),
     notes: snaps.flatMap((s) => s.notes.map((n) => `${s.repo}: ${n}`)),
+    ...(snaps.some((s) => s.deployments) ? { deployments: snaps.flatMap((s) => s.deployments ?? []) } : {}),
+    // Trackers and AI spend are often shared across repositories: count each item once.
+    ...(snaps.some((s) => s.incidents) ? { incidents: unique(snaps.flatMap((s) => s.incidents ?? []), (i) => incidentKey(i.source, i.id)) } : {}),
+    ...(snaps.some((s) => s.costs) ? { costs: unique(snaps.flatMap((s) => s.costs ?? []), (e) => `${e.source}\n${e.date}\n${e.tool}\n${e.actor ?? ''}`) } : {}),
   };
+}
+
+/** `items` without repeats, judged by `key`; the first occurrence wins. */
+function unique<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Map<string, T>();
+  for (const item of items) if (!seen.has(key(item))) seen.set(key(item), item);
+  return [...seen.values()];
 }

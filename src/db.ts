@@ -2,8 +2,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ChangeKind, ClassSource, prId, UnavailableReason, Unit } from './constants.js';
+import type { CostCache } from './cost.js';
 import type { DurabilityCache, Measurement } from './durability.js';
-import type { ChangeRecord, Snapshot } from './types.js';
+import type { ChangeRecord, CostEntry, Snapshot } from './types.js';
 
 /** Snapshots before 0.3 stored the user-facing wording of an unavailable reason, not its code. */
 const LEGACY_REASONS: Record<string, UnavailableReason> = {
@@ -33,6 +34,7 @@ export class Store {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS snapshots (repo TEXT PRIMARY KEY, collected_at TEXT NOT NULL, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ${DURABILITY_TABLE} (key TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS costs (source TEXT NOT NULL, date TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (source, date));
     `);
   }
 
@@ -67,6 +69,19 @@ export class Store {
     };
   }
 
+  /** AI spend for finished days, so each day is fetched once. */
+  costCache(): CostCache {
+    const get = this.db.prepare('SELECT data FROM costs WHERE source = ? AND date = ?');
+    const set = this.db.prepare('INSERT OR REPLACE INTO costs (source, date, data) VALUES (?, ?, ?)');
+    return {
+      get: (source, date) => {
+        const row = get.get(source, date);
+        return row ? (JSON.parse(String(row.data)) as CostEntry[]) : undefined;
+      },
+      set: (source, date, entries) => void set.run(source, date, JSON.stringify(entries)),
+    };
+  }
+
   close(): void {
     this.db.close();
   }
@@ -89,6 +104,8 @@ function migrate(data: string): Snapshot {
     c.oid ??= null;
     c.tool ??= null;
     c.reviewDepth ??= null;
+    c.deployedAt ??= null;
+    c.deployLeadTimeHours ??= null;
     const reason = c.durability?.reason as string | undefined;
     if (reason !== undefined && reason in LEGACY_REASONS) c.durability.reason = LEGACY_REASONS[reason];
   }

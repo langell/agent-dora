@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { MS_PER_SECOND, prId, TOOL_NAME, type ReviewState } from './constants.js';
-import type { RawIssue, RawPr } from './types.js';
+import { DeploySource, DeployStatus, MS_PER_SECOND, prId, TOOL_NAME, type ReviewState } from './constants.js';
+import type { Deployment, RawIssue, RawPr } from './types.js';
 
 const run = promisify(execFile);
 
@@ -26,6 +26,10 @@ const BOT_TYPENAME = 'Bot';
 /** Issue timeline event type for a label being added. */
 const EVENT_LABELED = 'labeled';
 
+/** GitHub's GraphQL `DeploymentStatusState` values that end a deployment. */
+const DeployState = { Success: 'SUCCESS', Failure: 'FAILURE', Error: 'ERROR' } as const;
+const FAILED_DEPLOY_STATES: readonly string[] = [DeployState.Failure, DeployState.Error];
+
 // Page sizes. PRs with more commits, reviews or labels than these are read partially.
 const PR_PAGE_SIZE = 50;
 const ISSUE_PAGE_SIZE = 100;
@@ -33,6 +37,9 @@ const REST_PAGE_SIZE = 100;
 const MAX_PR_LABELS = 30;
 const MAX_PR_COMMITS = 100;
 const MAX_PR_REVIEWS = 50;
+const DEPLOY_PAGE_SIZE = 100;
+/** Statuses read per deployment; hosts post a handful (queued, in progress, success). */
+const MAX_DEPLOY_STATUSES = 20;
 
 // Retry transient failures and secondary rate limits (which GitHub reports as 403).
 const RETRY_STATUSES = new Set([403, 502, 503]);
@@ -226,6 +233,46 @@ export class GitHub {
       if (older !== -1 || !page.pageInfo.hasNextPage) return out;
       cursor = page.pageInfo.endCursor;
     }
+  }
+
+  /**
+   * Deployments created on or after `since` to environments matching `environment`
+   * (case-insensitive regex), oldest first. Hosts like Vercel and Netlify record their
+   * deploys here through their GitHub integration.
+   */
+  async deployments(since: Date, environment: string): Promise<Deployment[]> {
+    const query = `query($owner:String!,$name:String!,$cursor:String){
+      repository(owner:$owner,name:$name){
+        deployments(first:${DEPLOY_PAGE_SIZE}, after:$cursor, orderBy:{field:CREATED_AT, direction:DESC}){
+          pageInfo{hasNextPage endCursor}
+          nodes{createdAt environment commitOid latestStatus{state environmentUrl} statuses(first:${MAX_DEPLOY_STATUSES}){nodes{state createdAt}}}
+        }
+      }
+    }`;
+    type Node = {
+      createdAt: string; environment: string | null; commitOid: string;
+      latestStatus: { state: string; environmentUrl: string | null } | null;
+      statuses: { nodes: { state: string; createdAt: string }[] };
+    };
+    type Data = { repository: { deployments: Connection<Node> } };
+    const nodes = await this.newestSince<Data, Node>(query, {}, (d) => d.repository.deployments, since, (n) => n.createdAt);
+    const env = new RegExp(environment, 'i');
+    return nodes
+      .filter((n) => n.environment && env.test(n.environment))
+      .map((n): Deployment => {
+        const succeeded = n.statuses.nodes.filter((st) => st.state === DeployState.Success).map((st) => st.createdAt).sort();
+        const failed = FAILED_DEPLOY_STATES.includes(n.latestStatus?.state ?? '');
+        return {
+          source: DeploySource.GitHub,
+          environment: n.environment!,
+          sha: n.commitOid,
+          createdAt: n.createdAt,
+          readyAt: succeeded[0] ?? null,
+          status: succeeded.length ? DeployStatus.Success : failed ? DeployStatus.Failure : DeployStatus.Pending,
+          url: n.latestStatus?.environmentUrl ?? null,
+        };
+      })
+      .reverse();
   }
 
   /** Every page of a paginated REST list, one array per page. */

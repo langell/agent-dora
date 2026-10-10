@@ -44,7 +44,7 @@ test('commit mode: direct commits, a branch merge, reverts and Caused-by', async
 
   const now = new Date(T0 + 40 * DAY);
   const since = new Date(T0 - DAY);
-  const changes = await commitChanges(await firstParentCommits(r.dir, 'main', since), { repoPath: r.dir, ref: 'main', repo: 'o/r', since, cfg, now, bugIssues: [] });
+  const changes = await commitChanges(await firstParentCommits(r.dir, 'main', since), { repoPath: r.dir, ref: 'main', repo: 'o/r', since, cfg, now, reports: [] });
   const byId = new Map(changes.map((c) => [c.id, c]));
 
   assert.equal(changes.length, 7); // initial, b, c, merge, f, revert, fix

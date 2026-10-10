@@ -5,13 +5,16 @@ import {
   AUTHOR_CLASSES,
   CLASS_KEYS,
   CLASS_SOURCES,
+  AuthorClass,
   ChangeKind,
   ChangeStatus,
+  DeployStatus,
   DurabilityStatus,
   FailureReason,
   FIXER_ISSUE,
   FIXER_KEYS,
   FIXER_OUTSIDE,
+  incidentKey,
   REVIEW_DEPTHS,
   ReviewDepth,
   ReviewState,
@@ -24,12 +27,14 @@ import {
   shortSha,
   UnavailableReason,
   isoDate,
-  type AuthorClass,
   type ClassKey,
   type ClassSource,
+  type DeploySource,
   type FixerKey,
+  type IncidentSource,
 } from './constants.js';
-import type { ChangeRecord, Durability, OpenPrRecord, RawPr, ReworkEvent, Snapshot, Unit } from './types.js';
+import { releases } from './deployments.js';
+import type { ChangeRecord, CostEntry, Deployment, Durability, Incident, OpenPrRecord, RawPr, ReworkEvent, Snapshot, Unit } from './types.js';
 
 export function median(xs: number[]): number | null {
   if (!xs.length) return null;
@@ -129,6 +134,8 @@ export function buildPrRecord(pr: RawPr, cls: Classification, rework: ReworkEven
     createdAt: pr.createdAt,
     mergedAt,
     firstCommitAt: firstCommit === null ? null : new Date(firstCommit).toISOString(),
+    deployedAt: null,
+    deployLeadTimeHours: null,
     firstReviewAt: review,
     leadTimeHours: (Date.parse(mergedAt) - start) / MS_PER_HOUR,
     reviewWaitHours: review ? (Date.parse(review) - Date.parse(pr.createdAt)) / MS_PER_HOUR : null,
@@ -187,6 +194,10 @@ export interface ClassStats {
   leadTimeP50Hours: number | null;
   leadTime: Quantiles | null;
   reviewWaitP50Hours: number | null;
+  /** First commit to production, for changes deployed so far. */
+  deployLeadTimeP50Hours: number | null;
+  /** Changes a tracker incident blamed with `Caused-by`, at any time: defects that escaped to production. */
+  escapedDefects: number;
   /** PRs by how closely a person reviewed them (PR mode only). */
   reviewDepth: Record<ReviewDepth, number>;
   /** Share of PRs merged with no human review, or a human approval with nothing written. */
@@ -203,6 +214,61 @@ export interface WeekRow {
   matured: boolean;
   merged: Record<ClassKey, number>;
   durable: Record<ClassKey, number>;
+  /** Commits that went live in production this week (once each, however many projects deployed them). */
+  deploys: number;
+  /** Incidents opened this week. */
+  incidents: number;
+}
+
+/** DORA's delivery measures, from deployments and incident trackers. */
+export interface DeliveryStats {
+  /** Where deployments came from; null without deployment data. */
+  deploySource: DeploySource | null;
+  environments: string[];
+  /** Commits that went live in production in the period; one commit deployed to several projects counts once. */
+  deploys: number;
+  deploysPerWeek: number | null;
+  failedDeploys: number;
+  /** Changes not in production yet. */
+  undeployed: number;
+  /** Incidents in the period; null without a tracker. */
+  incidents: number | null;
+  incidentsBySource: Partial<Record<IncidentSource, number>>;
+  /** Incidents that named the change that caused them. */
+  linkedIncidents: number;
+  /** Deployments followed by an incident within `attributionHours`. */
+  deploysWithIncident: number | null;
+  /** DORA change failure rate by deployment: share of deployments followed by an incident. */
+  deployFailureRate: number | null;
+  /** Incident opened to resolved (DORA's time to restore). */
+  timeToRestoreP50Hours: number | null;
+  attributionHours: number;
+}
+
+/** AI spend for one tool, against the durable changes it helped write. */
+export interface ToolCost {
+  tool: string;
+  usd: number;
+  durable: number;
+  perDurableChange: number | null;
+}
+
+/** AI spend over the matured period, against durable AI-written output from the same period. */
+export interface CostStats {
+  /** The stretch spend is counted over: the matured period, so every change in it has a verdict. */
+  from: string;
+  until: string;
+  usd: number;
+  /** Durable agent and assisted changes that landed in the same stretch. */
+  durable: number;
+  perDurableChange: number | null;
+  /** Spend per thousand added lines from matured AI-written changes still there at the end of the window. */
+  perThousandSurvivingLines: number | null;
+  byTool: ToolCost[];
+  /** People (or API keys) the spend came from. */
+  actors: number;
+  /** Spend after the matured period: its changes haven't been judged yet. */
+  maturingUsd: number;
 }
 
 /** Stats for one AI tool's changes. */
@@ -268,6 +334,12 @@ export interface Report {
   survivalCurve: CurveRow[];
   classSources: Record<AuthorClass, Record<ClassSource, number>>;
   queueAges: QueueAgeBucket[];
+  /** Null unless deployments or incidents were collected. */
+  delivery: DeliveryStats | null;
+  /** Null unless AI spend was collected. */
+  cost: CostStats | null;
+  /** Incidents from trackers, if any were collected. */
+  incidents: Incident[];
   weeks: WeekRow[];
   changes: ReportedChange[];
   openPrs: OpenPrRecord[];
@@ -361,6 +433,8 @@ export function classStats(changes: ChangeRecord[], openPrs: OpenPrRecord[], p: 
     leadTimeP50Hours: median(leadTimes),
     leadTime: quantiles(leadTimes),
     reviewWaitP50Hours: median(present(changes.map((c) => c.reviewWaitHours))),
+    deployLeadTimeP50Hours: median(present(changes.map((c) => c.deployLeadTimeHours))),
+    escapedDefects: counted.filter((c) => c.rework.some((e) => e.kind === ReworkKind.Incident)).length,
     reviewDepth: depth,
     rubberStampRate: reviewed ? (depth[ReviewDepth.None] + depth[ReviewDepth.Silent]) / reviewed : null,
     sizeP50: median(changes.map((c) => c.size)),
@@ -376,16 +450,28 @@ function statsByClass(changes: ChangeRecord[], openPrs: OpenPrRecord[], p: Perio
   return Object.fromEntries(CLASS_KEYS.map((key) => [key, classStats(changes.filter(inClass(key)), openPrs.filter(inClass(key)), p, now)])) as Record<ClassKey, ClassStats>;
 }
 
-/** Changes landed and durable per week (Monday start, UTC), from the period start to `now`. Fixes and reverts aren't counted. */
-export function weeklySeries(changes: ChangeRecord[], p: Period, now: Date): WeekRow[] {
+/**
+ * Changes landed and durable per week (Monday start, UTC), from the period start to `now`,
+ * plus deployments and incidents. Fixes and reverts aren't counted as changes.
+ */
+export function weeklySeries(changes: ChangeRecord[], p: Period, now: Date, deploys: Deployment[] = [], incidents: Incident[] = []): WeekRow[] {
   const weeks: WeekRow[] = [];
   for (let w = startOfWeek(p.start); w <= now.getTime(); w += MS_PER_WEEK) {
-    weeks.push({ week: isoDate(new Date(w).toISOString()), matured: w + MS_PER_WEEK <= p.maturedUntil, merged: zeroes(), durable: zeroes() });
+    weeks.push({ week: isoDate(new Date(w).toISOString()), matured: w + MS_PER_WEEK <= p.maturedUntil, merged: zeroes(), durable: zeroes(), deploys: 0, incidents: 0 });
   }
   const first = weeks.length ? Date.parse(weeks[0]!.week) : 0;
+  const rowAt = (iso: string) => weeks[Math.floor((startOfWeek(Date.parse(iso)) - first) / MS_PER_WEEK)];
+  for (const d of releases(deploys)) {
+    const row = rowAt(d.readyAt!);
+    if (row) row.deploys++;
+  }
+  for (const i of incidents) {
+    const row = rowAt(i.createdAt);
+    if (row) row.incidents++;
+  }
   for (const c of changes) {
     if (c.remedial) continue;
-    const row = weeks[Math.floor((startOfWeek(Date.parse(c.mergedAt)) - first) / MS_PER_WEEK)];
+    const row = rowAt(c.mergedAt);
     if (!row) continue;
     for (const key of [c.authorClass, ALL_CLASSES] as const) {
       row.merged[key]++;
@@ -434,7 +520,7 @@ export function fixMatrix(changes: ChangeRecord[], p: Period): FixMatrix {
   const fixer = (c: ChangeRecord, e: ReworkEvent): FixerKey => {
     const from = e.from;
     if (!from) return FIXER_OUTSIDE;
-    if (from.kind === ReworkSourceKind.Issue) return FIXER_ISSUE;
+    if (from.kind === ReworkSourceKind.Issue || from.kind === ReworkSourceKind.Incident) return FIXER_ISSUE;
     const key = from.kind === ReworkSourceKind.Pr ? `${from.kind}:${from.number}` : `${from.kind}:${from.oid}`;
     const short = from.kind === ReworkSourceKind.Commit ? byRef.get(scoped(c, `${from.kind}:${shortSha(from.oid)}`)) : undefined;
     return (byRef.get(scoped(c, key)) ?? short)?.authorClass ?? FIXER_OUTSIDE;
@@ -516,14 +602,96 @@ export function failureReasons(c: ChangeRecord, p: Period, threshold: number, mi
   return reasons;
 }
 
+/**
+ * Deployment frequency, failure and restore times. A deployment counts as failed when an
+ * incident opened within `attributionHours` after it went live (and before the next one did).
+ */
+export function deliveryStats(snap: Snapshot, p: Period, now: Date, attributionHours: number): DeliveryStats | null {
+  if (!snap.deployments && !snap.incidents) return null;
+  const inPeriod = (iso: string) => Date.parse(iso) >= p.start && Date.parse(iso) <= now.getTime();
+  const live = releases(snap.deployments ?? []);
+  const deploys = live.filter((d) => inPeriod(d.readyAt!));
+  const incidents = (snap.incidents ?? []).filter((i) => inPeriod(i.createdAt));
+  const weeks = (now.getTime() - p.start) / MS_PER_WEEK;
+  const hit = new Set<Deployment>();
+  for (const i of incidents) {
+    const at = Date.parse(i.createdAt);
+    // The deployment that was live when the incident opened, if it went live recently enough.
+    const cause = live.filter((d) => Date.parse(d.readyAt!) <= at).at(-1);
+    if (cause && at - Date.parse(cause.readyAt!) <= attributionHours * MS_PER_HOUR) hit.add(cause);
+  }
+  const bySource: Partial<Record<IncidentSource, number>> = {};
+  for (const i of incidents) bySource[i.source] = (bySource[i.source] ?? 0) + 1;
+  const linked = new Set(snap.changes.flatMap((c) => c.rework.flatMap((e) => (e.from?.kind === ReworkSourceKind.Incident ? [incidentKey(e.from.source, e.from.id)] : []))));
+  const restore = incidents.filter((i) => i.resolvedAt).map((i) => (Date.parse(i.resolvedAt!) - Date.parse(i.createdAt)) / MS_PER_HOUR);
+  const tracked = !!snap.incidents;
+  const withIncident = deploys.filter((d) => hit.has(d)).length;
+  return {
+    deploySource: snap.deployments?.[0]?.source ?? null,
+    environments: [...new Set((snap.deployments ?? []).map((d) => d.environment))].sort(),
+    deploys: deploys.length,
+    deploysPerWeek: snap.deployments && weeks >= MIN_WEEKS_FOR_RATE ? deploys.length / weeks : null,
+    failedDeploys: (snap.deployments ?? []).filter((d) => d.status === DeployStatus.Failure && inPeriod(d.createdAt)).length,
+    undeployed: snap.deployments ? snap.changes.filter((c) => !c.deployedAt).length : 0,
+    incidents: tracked ? incidents.length : null,
+    incidentsBySource: bySource,
+    linkedIncidents: incidents.filter((i) => linked.has(incidentKey(i.source, i.id))).length,
+    deploysWithIncident: tracked && snap.deployments ? withIncident : null,
+    deployFailureRate: tracked && deploys.length ? withIncident / deploys.length : null,
+    timeToRestoreP50Hours: median(restore),
+    attributionHours,
+  };
+}
+
+/** Thousand, for spend per thousand lines. */
+const PER_THOUSAND = 1000;
+
+/**
+ * AI spend over the matured period against the durable agent and assisted changes that
+ * landed in it, overall and per tool. Spend after the matured period is reported apart,
+ * since its changes don't have a verdict yet.
+ */
+export function costStats(costs: CostEntry[] | undefined, changes: ChangeRecord[], p: Period): CostStats | null {
+  if (!costs) return null;
+  const from = isoDate(new Date(p.start).toISOString());
+  const until = isoDate(new Date(p.maturedUntil).toISOString());
+  const counted = costs.filter((e) => e.date >= from && e.date <= until);
+  const aiDurable = maturedOf(changes, p).filter((c) => c.durable && c.authorClass !== AuthorClass.Human);
+  const aiMeasured = maturedOf(changes, p).filter((c) => c.authorClass !== AuthorClass.Human && isMeasured(c));
+  const usd = counted.reduce((n, e) => n + e.usd, 0);
+  const surviving = aiMeasured.reduce((n, c) => n + c.durability.surviving, 0);
+  const tools = [...new Set([...counted.map((e) => e.tool), ...aiDurable.flatMap((c) => (c.tool ? [c.tool] : []))])];
+  const byTool = tools
+    .map((tool): ToolCost => {
+      const spent = counted.filter((e) => e.tool === tool).reduce((n, e) => n + e.usd, 0);
+      const durable = aiDurable.filter((c) => c.tool === tool).length;
+      return { tool, usd: spent, durable, perDurableChange: durable && spent ? spent / durable : null };
+    })
+    .filter((t) => t.usd > 0)
+    .sort((a, b) => b.usd - a.usd);
+  return {
+    from,
+    until,
+    usd,
+    durable: aiDurable.length,
+    perDurableChange: aiDurable.length && usd ? usd / aiDurable.length : null,
+    perThousandSurvivingLines: surviving && usd ? (usd / surviving) * PER_THOUSAND : null,
+    byTool,
+    actors: new Set(counted.flatMap((e) => (e.actor ? [e.actor] : []))).size,
+    maturingUsd: costs.filter((e) => e.date > until).reduce((n, e) => n + e.usd, 0),
+  };
+}
+
 /** Settings the report uses that aren't recorded in the snapshot. */
 export interface ReportOptions {
   compareDays: number;
   hotspotDepth: number;
+  /** Hours after a deployment in which an incident counts against it. */
+  attributionHours: number;
 }
 
 export function aggregate(snap: Snapshot, now: Date = new Date(snap.collectedAt), options: Partial<ReportOptions> = {}): Report {
-  const { compareDays = DEFAULT_CONFIG.compareDays, hotspotDepth = DEFAULT_CONFIG.hotspotDepth } = options;
+  const { compareDays = DEFAULT_CONFIG.compareDays, hotspotDepth = DEFAULT_CONFIG.hotspotDepth, attributionHours = DEFAULT_CONFIG.incidents.attributionHours } = options;
   const minLines = snap.minSurvivalLines ?? DEFAULT_CONFIG.minSurvivalLines;
   const p = period(snap, now);
   return {
@@ -548,7 +716,10 @@ export function aggregate(snap: Snapshot, now: Date = new Date(snap.collectedAt)
     survivalCurve: survivalCurve(snap.changes, p, snap.windowDays),
     classSources: classSources(snap.changes),
     queueAges: queueAges(snap.openPrs, now),
-    weeks: weeklySeries(snap.changes, p, now),
+    delivery: deliveryStats(snap, p, now, attributionHours),
+    cost: costStats(snap.costs, snap.changes, p),
+    incidents: snap.incidents ?? [],
+    weeks: weeklySeries(snap.changes, p, now, snap.deployments, snap.incidents),
     changes: [...snap.changes]
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))
       .map((c) => ({ ...c, status: changeStatus(c), failureReasons: failureReasons(c, p, snap.survivalThreshold, minLines) })),

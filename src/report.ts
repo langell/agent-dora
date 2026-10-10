@@ -26,6 +26,10 @@ const PERCENT = 100;
 /** Durations under this many hours read better in hours than in days. */
 const SHOW_DAYS_AFTER_HOURS = 48;
 export const pct = (x: number | null) => (x === null ? EMPTY_VALUE : `${Math.round(x * PERCENT)}%`);
+/** Dollars below this show cents. */
+const SHOW_CENTS_BELOW = 100;
+export const usd = (x: number | null) =>
+  x === null ? EMPTY_VALUE : `$${x < SHOW_CENTS_BELOW ? x.toFixed(2) : Math.round(x).toLocaleString('en-US')}`;
 export const num = (x: number | null, digits = 1) => (x === null ? EMPTY_VALUE : x.toFixed(digits).replace(/\.0+$/, ''));
 export const duration = (hours: number | null) => {
   if (hours === null) return EMPTY_VALUE;
@@ -82,6 +86,12 @@ export function rows(r: Report): Row[] {
     { label: 'Lead time (p50)', hint: `First commit to ${r.unit === Unit.Prs ? 'merge' : 'landing on the branch'}`, value: (s) => duration(s.leadTimeP50Hours) },
     ...(r.unit === Unit.Prs ? [{ label: 'Time to first review (p50)', hint: 'PR opened to first review by a person other than the author (AI review bots excluded)', value: (s: ClassStats) => duration(s.reviewWaitP50Hours) }] : []),
     ...(r.unit === Unit.Prs ? [{ label: 'Rubber-stamped', hint: 'PRs merged with no human review, or a human approval with nothing written', value: (s: ClassStats) => pct(s.rubberStampRate) }] : []),
+    ...(r.delivery?.deploySource
+      ? [{ label: 'Lead time to production (p50)', hint: `First commit to the first production deployment containing the ${n.singular}`, value: (s: ClassStats) => duration(s.deployLeadTimeP50Hours) }]
+      : []),
+    ...(r.delivery?.incidents !== null && r.delivery?.incidents !== undefined
+      ? [{ label: 'Escaped defects', hint: `${n.count} an incident or production bug named as its cause`, value: (s: ClassStats) => String(s.escapedDefects) }]
+      : []),
     { label: n.size, hint: 'Lines added plus deleted, excluding ignored files', value: (s) => num(s.sizeP50, 0) },
     { label: 'Open PRs awaiting review', hint: 'Non-draft open PRs no person has reviewed yet', value: (s) => String(s.awaitingReview) },
     { label: 'Not measurable', hint: `${n.count} whose durability couldn't be measured, e.g. missing history`, value: (s) => String(s.unknown) },
@@ -140,6 +150,25 @@ export function renderMarkdown(r: Report): string {
       lines.push(`| ${m.label} | ${CLASS_KEYS.map(cell).join(' | ')} |`);
     }
     lines.push('');
+  }
+
+  const d = r.delivery;
+  if (d) {
+    lines.push('### Delivery', '', '| Measure | Value |', '|---|--:|');
+    if (d.deploySource) {
+      lines.push(`| Production deploys / week | ${num(d.deploysPerWeek)} |`, `| Lead time to production (p50) | ${duration(r.stats[ALL_CLASSES].deployLeadTimeP50Hours)} |`);
+    }
+    if (d.incidents !== null) {
+      lines.push(`| Incidents | ${d.incidents} |`, `| Deploys followed by an incident | ${pct(d.deployFailureRate)} |`, `| Time to restore (p50) | ${duration(d.timeToRestoreP50Hours)} |`);
+    }
+    lines.push('');
+  }
+
+  const c = r.cost;
+  if (c) {
+    lines.push(`### AI spend, ${c.from} to ${c.until}`, '', '| Tool | Spend | Durable changes | Per durable change |', '|---|--:|--:|--:|');
+    for (const t of c.byTool) lines.push(`| ${t.tool} | ${usd(t.usd)} | ${t.durable} | ${usd(t.perDurableChange)} |`);
+    lines.push(`| **All** | **${usd(c.usd)}** | **${c.durable}** | **${usd(c.perDurableChange)}** |`, '');
   }
 
   if (r.tools.length) {

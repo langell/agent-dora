@@ -1,11 +1,15 @@
 import { classify, isHumanReview, isIgnoredAuthor } from './classify.js';
 import { commitChanges, directCommitCount } from './commits.js';
+import { loadCosts } from './cost.js';
 import type { Config } from './config.js';
 import { isoDate, MS_PER_DAY, Unit, UnitSetting } from './constants.js';
 import type { Store } from './db.js';
+import { attachDeployments, loadDeployments } from './deployments.js';
 import * as g from './git.js';
 import type { GitHub } from './github.js';
+import { loadIncidents } from './incidents.js';
 import type { ModeOptions } from './modes.js';
+import { incidentReport, issueReport } from './rework.js';
 import { prChanges } from './prs.js';
 import type { OpenPrRecord, Snapshot } from './types.js';
 
@@ -55,10 +59,21 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
   }
   if (unit === Unit.Commits) notes.push('Commit mode: review time is not available, and lead time is first commit to landing on the branch.');
   for (const n of notes) log(`Note: ${n}`);
+  // Optional sources report problems as notes rather than stopping the run.
+  const note = (msg: string) => {
+    notes.push(msg);
+    log(`Note: ${msg}`);
+  };
 
-  const mode: ModeOptions = { repoPath, ref, repo, since, cfg, now, bugIssues: bugs, cache: store.durabilityCache(), log };
+  const incidents = await loadIncidents(cfg, since, now, note, log);
+  const reports = [...bugs.map(issueReport), ...(incidents ?? []).map(incidentReport)];
+  const mode: ModeOptions = { repoPath, ref, repo, since, cfg, now, reports, cache: store.durabilityCache(), log };
   // Commit mode reuses the branch history already read to choose the unit.
   const changes = unit === Unit.Commits ? await commitChanges(branchCommits, mode) : await prChanges(merged, mode);
+
+  const deployments = await loadDeployments(cfg, gh, since, note, log);
+  if (deployments) await attachDeployments(repoPath, changes, deployments, since);
+  const costs = await loadCosts(cfg, repoPath, since, now, store.costCache(), note, log);
 
   const openPrs: OpenPrRecord[] = open.map((pr) => ({
     number: pr.number,
@@ -82,6 +97,10 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
     changes,
     openPrs,
     notes,
+    // Only present when a source is set up, so the report can tell "none" from "not measured".
+    ...(deployments ? { deployments } : {}),
+    ...(incidents ? { incidents } : {}),
+    ...(costs ? { costs } : {}),
   };
   store.saveSnapshot(snap);
   return snap;

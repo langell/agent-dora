@@ -75,11 +75,12 @@ export const UNAVAILABLE_REASON_NAMES: Record<UnavailableReason, string> = {
   [UnavailableReason.NoMeasurableLines]: 'no measurable added lines',
 };
 
-export const ReworkKind = { Revert: 'revert', Rework: 'rework', Bug: 'bug' } as const;
+/** Kinds of evidence that a change needed fixing. An incident is a defect that escaped to production. */
+export const ReworkKind = { Revert: 'revert', Rework: 'rework', Bug: 'bug', Incident: 'incident' } as const;
 export type ReworkKind = ValueOf<typeof ReworkKind>;
 
 /** What kind of thing showed that a change needed fixing. */
-export const ReworkSourceKind = { Pr: 'pr', Commit: 'commit', Issue: 'issue' } as const;
+export const ReworkSourceKind = { Pr: 'pr', Commit: 'commit', Issue: 'issue', Incident: 'incident' } as const;
 export type ReworkSourceKind = ValueOf<typeof ReworkSourceKind>;
 
 /** A change's standing in the report, derived from its durability. */
@@ -102,6 +103,7 @@ export const FAILURE_REASON_NAMES: Record<FailureReason, string> = {
   [FailureReason.Revert]: 'Reverted',
   [FailureReason.Rework]: 'Reworked',
   [FailureReason.Bug]: 'Caused a bug',
+  [FailureReason.Incident]: 'Caused an incident',
   [FailureReason.Churned]: 'Lines rewritten',
 };
 
@@ -128,6 +130,47 @@ export const REVIEW_DEPTH_NAMES: Record<ReviewDepth, string> = {
   [ReviewDepth.Silent]: 'Approved without comment',
   [ReviewDepth.Engaged]: 'Commented or requested changes',
 };
+
+// ---- Deployments, incidents and AI cost ---------------------------------------
+
+/** Where production deployments come from. */
+export const DeploySource = { GitHub: 'github', Vercel: 'vercel' } as const;
+export type DeploySource = ValueOf<typeof DeploySource>;
+
+/** The deployments setting: a source, the first available one, or none. */
+export const DeploySourceSetting = { ...DeploySource, Auto: 'auto', None: 'none' } as const;
+export type DeploySourceSetting = ValueOf<typeof DeploySourceSetting>;
+
+/** How a deployment ended. */
+export const DeployStatus = { Success: 'success', Failure: 'failure', Pending: 'pending' } as const;
+export type DeployStatus = ValueOf<typeof DeployStatus>;
+
+/** Incident and bug trackers. */
+export const IncidentSource = { Linear: 'linear', Jira: 'jira', PagerDuty: 'pagerduty' } as const;
+export type IncidentSource = ValueOf<typeof IncidentSource>;
+
+export const INCIDENT_SOURCE_NAMES: Record<IncidentSource, string> = {
+  [IncidentSource.Linear]: 'Linear',
+  [IncidentSource.Jira]: 'Jira',
+  [IncidentSource.PagerDuty]: 'PagerDuty',
+};
+
+/** Identifies an incident across trackers, e.g. "linear:ENG-12". */
+export const incidentKey = (source: IncidentSource, id: string) => `${source}:${id}`;
+
+/** Where AI spend comes from. */
+export const CostSource = { ClaudeCode: 'claude-code', File: 'file' } as const;
+export type CostSource = ValueOf<typeof CostSource>;
+
+/** Environment variables holding credentials for the optional integrations. */
+export const EnvVar = {
+  AnthropicAdminKey: 'ANTHROPIC_ADMIN_KEY',
+  VercelToken: 'VERCEL_TOKEN',
+  LinearApiKey: 'LINEAR_API_KEY',
+  JiraEmail: 'JIRA_EMAIL',
+  JiraApiToken: 'JIRA_API_TOKEN',
+  PagerDutyToken: 'PAGERDUTY_TOKEN',
+} as const;
 
 /** GitHub's `PullRequestReviewState` values. */
 export const ReviewState = {

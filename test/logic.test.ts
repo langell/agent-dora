@@ -6,7 +6,7 @@ import { ClassSource, UnavailableReason } from '../src/constants.js';
 import { aggregate, buildPrRecord, changeStatus, isDurable, median } from '../src/metrics.js';
 import { renderHtml } from '../src/report-html.js';
 import { renderMarkdown } from '../src/report.js';
-import { findRework, looksRemedial, remedialPrs } from '../src/rework.js';
+import { findRework, issueReport, looksRemedial, remedialPrs } from '../src/rework.js';
 import type { PrReview, RawPr, Snapshot } from '../src/types.js';
 
 const cfg = DEFAULT_CONFIG;
@@ -113,7 +113,7 @@ test('rework: git reverts, GitHub revert PRs, rework labels, caused-by', () => {
   ];
   const reverts = [{ oid: 'rrr999', at: '2026-01-04T00:00:00Z', subject: 'Revert "Add login"', reverts: ['aaa1'] }];
   const issues = [{ number: 50, title: 'Billing broken', body: 'Caused-by: #4', createdAt: '2026-01-07T00:00:00Z' }];
-  const events = findRework(merged, issues, reverts, (s) => (s === 'aaa1' ? 'aaa111' : s), cfg);
+  const events = findRework(merged, issues.map(issueReport), reverts, (s) => (s === 'aaa1' ? 'aaa111' : s), cfg);
   const byTarget = (n: number) => events.filter((e) => e.target === n).map((e) => e.kind).sort();
   assert.deepEqual(byTarget(1), ['revert']);
   assert.deepEqual(byTarget(2), ['revert']); // body and title both point here; deduped per source

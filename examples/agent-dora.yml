@@ -11,6 +11,7 @@ permissions:
   contents: read
   pull-requests: read
   issues: read
+  deployments: read # lead time to production, from GitHub Deployments (Vercel, Netlify...)
   pages: write
   id-token: write
 
@@ -31,6 +32,11 @@ jobs:
 
       - uses: langell/agent-dora@v0
         id: dora
+        # Optional integrations: each is used when its secret is set.
+        with:
+          anthropic-admin-key: ${{ secrets.ANTHROPIC_ADMIN_KEY }} # AI cost per durable change
+          linear-api-key: ${{ secrets.LINEAR_API_KEY }} # incidents
+          pagerduty-token: ${{ secrets.PAGERDUTY_TOKEN }} # incidents
 
       - uses: actions/upload-pages-artifact@v3
         with:
