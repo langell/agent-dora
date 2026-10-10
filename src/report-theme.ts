@@ -51,6 +51,8 @@ section { margin-top: 32px; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
 .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; }
 .grid2:empty, .grid3:empty { display: none; }
+/* Cards in a grid line up by their tops; the page-level section margin doesn't apply inside. */
+.grid2 > *, .grid3 > * { margin-top: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .segmented button { border: 0; border-radius: 0; background: transparent; padding: 4px 10px; }
@@ -62,7 +64,13 @@ section { margin-top: 32px; }
 .meter span { display: block; height: 100%; border-radius: 2px; background: var(--ink-2); }
 .stack { display: flex; gap: 2px; height: 10px; min-width: 120px; }
 .stack span { border-radius: 2px; }
-.heat { display: inline-block; min-width: 2.5em; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--ink) calc(var(--heat) * 0.25), transparent); }
+table.matrix { table-layout: fixed; }
+table.matrix th:first-child { width: 24%; }
+table.matrix th:not(:first-child), table.matrix td:not(:first-child) { text-align: center; vertical-align: middle; font-variant-numeric: tabular-nums; }
+table.matrix td { vertical-align: middle; }
+table.matrix th { vertical-align: bottom; }
+table.matrix td.heat { background: color-mix(in srgb, var(--ink) calc(var(--heat) * 0.28), transparent); font-weight: 600; }
+table.matrix tr:hover td.heat { background: color-mix(in srgb, var(--ink) calc(var(--heat) * 0.28 + 4%), transparent); }
 /* Review depth: one ordinal ramp of ink, strongest for the least review. */
 .depth-0 { --depth: color-mix(in srgb, var(--ink) 80%, transparent); }
 .depth-1 { --depth: color-mix(in srgb, var(--ink) 48%, transparent); }
@@ -77,6 +85,8 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .chart svg { display: block; width: 100%; overflow: visible; }
 .chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart .direct { fill: var(--ink-2); font-size: 12px; }
+.chart .value { fill: var(--ink); font-size: 13px; font-weight: 600; }
+.chart .hint-text { fill: var(--muted); font-size: 11px; font-weight: 400; }
 .chart .halo { paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
 .tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); white-space: nowrap; opacity: 0; transition: opacity .1s; z-index: 2; }
 .tooltip .row { display: flex; align-items: center; gap: 6px; justify-content: space-between; }

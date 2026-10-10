@@ -85,9 +85,9 @@ function barCharts(r: Report) {
   const n = nouns(r.unit);
   const detail = (f: (s: ClassStats) => string) => Object.fromEntries(AUTHOR_CLASSES.map((c) => [c, f(r.stats[c])]));
   return [
-    { id: 'bar-durable', title: 'Durable rate', note: `Higher is better. Whiskers show the 95% range; faded bars rest on fewer than ${MIN_SAMPLE} ${n.plural}.`, field: 'durableRate', ci: 'durableRateCi', detail: detail((s) => `${s.durable} of ${s.matured} matured ${n.plural}`) },
+    { id: 'bar-durable', title: 'Durable rate', note: `Higher is better. The pale band is the 95% range; faded bars rest on fewer than ${MIN_SAMPLE} ${n.plural}.`, field: 'durableRate', ci: 'durableRateCi', detail: detail((s) => `${s.durable} of ${s.matured} matured ${n.plural}`) },
     { id: 'bar-churn', title: 'Line churn', note: 'Lower is better. Share of all added lines gone by the end of the window.', field: 'churn', ci: null, detail: detail((s) => `lines kept by the median ${n.singular}: ${pct(s.keptP50)}`) },
-    { id: 'bar-cfr', title: 'Change failure rate', note: 'Lower is better. Whiskers show the 95% range.', field: 'changeFailureRate', ci: 'changeFailureRateCi', detail: detail((s) => `${s.reverts} reverted, ${s.failingEarly} more failing early`) },
+    { id: 'bar-cfr', title: 'Change failure rate', note: 'Lower is better. The pale band is the 95% range.', field: 'changeFailureRate', ci: 'changeFailureRateCi', detail: detail((s) => `${s.reverts} reverted, ${s.failingEarly} more failing early`) },
   ] satisfies { id: string; title: string; note: string; field: keyof ClassStats; ci: keyof ClassStats | null; detail: Record<string, string> }[];
 }
 
@@ -179,17 +179,14 @@ function toolsCard(r: Report): string {
 function fixesCard(r: Report): string {
   const max = Math.max(0, ...AUTHOR_CLASSES.flatMap((c) => FIXER_KEYS.map((f) => r.fixes[c][f])));
   if (!max) return card('Who fixed whom', '', '<p class="hint">No reverts, rework or bugs inside the window.</p>');
-  const body = AUTHOR_CLASSES.map((c) => [
-    badge(c),
-    ...FIXER_KEYS.map((f) => {
-      const v = r.fixes[c][f];
-      return v ? `<span class="heat" style="--heat:${Math.round((v / max) * POINTS)}%">${v}</span>` : '<span class="hint">0</span>';
-    }),
-  ]);
+  // A matrix, not a list: equal columns, centered counts, and each cell shaded by its count.
+  const cell = (v: number) => (v ? `<td class="heat" style="--heat:${Math.round((v / max) * POINTS)}%">${v}</td>` : '<td class="hint">0</td>');
+  const head = `<tr><th>Fixed</th>${FIXER_KEYS.map((f) => `<th>${FIXER_NAMES[f]}</th>`).join('')}</tr>`;
+  const body = AUTHOR_CLASSES.map((c) => `<tr><td>${badge(c)}</td>${FIXER_KEYS.map((f) => cell(r.fixes[c][f])).join('')}</tr>`).join('');
   return card(
     'Who fixed whom',
     `Reverts, rework and bugs within the window. Rows: whose ${nouns(r.unit).plural} needed fixing. Columns: who fixed them.`,
-    table(['Fixed', ...FIXER_KEYS.map((f) => FIXER_NAMES[f])], body),
+    `<div class="scroll"><table class="matrix"><thead>${head}</thead><tbody>${body}</tbody></table></div>`,
   );
 }
 

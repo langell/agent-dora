@@ -8,7 +8,7 @@ const PERCENT = 100;
 const RESIZE_DEBOUNCE_MS = 150;
 // Chart geometry, in px.
 const LINE = { height: 260, margin: { t: 12, r: 72, b: 28, l: 40 }, gridLines: 4, minLabelGap: 72, labelNudge: 14, dot: 4, columnGap: 2 };
-const BAR = { rowHeight: 40, barHeight: 18, radius: 4, minWidth: 4, margin: { l: 72, r: 104 }, labelGap: 8, whiskerTick: 5, faded: 0.4 };
+const BAR = { rowHeight: 40, barHeight: 8, bandHeight: 18, radius: 4, minWidth: 4, margin: { l: 72, r: 96 }, labelGap: 12, band: 0.28, faded: 0.4 };
 const CURVE = { height: 240, margin: { t: 12, r: 72, b: 28, l: 40 }, dot: 4 };
 const SCATTER = { height: 320, margin: { t: 12, r: 16, b: 32, l: 44 }, dot: 4, hitRadius: 24 };
 const BOX = { rowHeight: 44, boxHeight: 18, margin: { l: 72, r: 16, b: 24 }, tick: 6 };
@@ -197,10 +197,10 @@ function weeklyModes() {
   });
 }
 
-// ---- Per-author bars, with confidence whiskers -----------------------------------
+// ---- Per-author bars, with 95% range bands -----------------------------------
 
 function barChart(host, bar) {
-  const W = host.clientWidth || 320, m = BAR.margin, rowH = BAR.rowHeight, half = BAR.barHeight / 2;
+  const W = host.clientWidth || 320, m = BAR.margin, rowH = BAR.rowHeight;
   const H = rowH * UI.classes.length;
   const iw = W - m.l - m.r;
   const svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, height: H, role: 'img' }, host);
@@ -212,15 +212,16 @@ function barChart(host, bar) {
     const small = s.matured < UI.minSample;
     const cy = i * rowH + rowH / 2;
     text(svg, m.l - 10, cy + 4, UI.classNames[c], { 'text-anchor': 'end', class: 'direct' });
-    el('rect', { x: m.l, y: cy - half, width: iw, height: BAR.barHeight, rx: BAR.radius, fill: 'var(--wash)' }, svg);
-    if (v) el('rect', { x: m.l, y: cy - half, width: Math.max(BAR.minWidth, v * iw), height: BAR.barHeight, rx: BAR.radius, fill: color(c), opacity: small ? BAR.faded : 1 }, svg);
-    if (ci) {
-      const x0 = m.l + ci[0] * iw, x1 = m.l + ci[1] * iw;
-      el('line', { x1: x0, x2: x1, y1: cy, y2: cy, stroke: 'var(--ink-2)', 'stroke-width': 1 }, svg);
-      for (const xe of [x0, x1]) el('line', { x1: xe, x2: xe, y1: cy - BAR.whiskerTick, y2: cy + BAR.whiskerTick, stroke: 'var(--ink-2)', 'stroke-width': 1 }, svg);
+    el('rect', { x: m.l, y: cy - BAR.barHeight / 2, width: iw, height: BAR.barHeight, rx: BAR.barHeight / 2, fill: 'var(--wash)' }, svg);
+    // The 95% range as a pale band behind a thinner bar, so both ends of the range stay visible.
+    if (ci) el('rect', { x: m.l + ci[0] * iw, y: cy - BAR.bandHeight / 2, width: Math.max(BAR.minWidth, (ci[1] - ci[0]) * iw), height: BAR.bandHeight, rx: BAR.radius, fill: color(c), opacity: BAR.band }, svg);
+    if (v) el('rect', { x: m.l, y: cy - BAR.barHeight / 2, width: Math.max(BAR.minWidth, v * iw), height: BAR.barHeight, rx: BAR.barHeight / 2, fill: color(c), opacity: small ? BAR.faded : 1 }, svg);
+    // Values sit in their own column past the track, so they never collide with the bar or band.
+    const label = text(svg, m.l + iw + BAR.labelGap, cy + 4, pct(v), { class: 'value' });
+    if (v !== null) {
+      const n = el('tspan', { class: 'hint-text', dx: 6 }, label);
+      n.textContent = 'n=' + s.matured;
     }
-    const end = Math.max(v || 0, ci ? ci[1] : 0);
-    text(svg, m.l + end * iw + BAR.labelGap, cy + 4, pct(v) + (v === null ? '' : ' · n=' + s.matured), { class: 'direct' });
     const hit = el('rect', { x: 0, y: i * rowH, width: W, height: rowH, fill: 'transparent' }, svg);
     hit.addEventListener('pointermove', (ev) => {
       const box = host.getBoundingClientRect();
