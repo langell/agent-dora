@@ -7,6 +7,7 @@ import { classify } from '../src/classify.js';
 import { DEFAULT_CONFIG, loadConfig } from '../src/config.js';
 import { Store } from '../src/db.js';
 import { aggregate, dirOf, quantile, reviewDepth, wilson } from '../src/metrics.js';
+import { renderHtml } from '../src/report-html.js';
 import { renderCsv, renderMarkdown } from '../src/report.js';
 import { combineSnapshots } from '../src/rollup.js';
 import type { ChangeRecord, PrReview, RawPr, Snapshot } from '../src/types.js';
@@ -245,4 +246,25 @@ test('store keeps every repository and caches full measurements', () => {
   assert.deepEqual(cache.get('k'), m);
   assert.equal(cache.get('missing'), undefined);
   store.close();
+});
+
+test('dashboard: every panel renders, the payload is slim, and wording follows the unit', () => {
+  const changes = [
+    change(1, { authorClass: 'agent', tool: 'Copilot', durable: false, rework: [{ target: 1, kind: 'revert', at: ago(59), from: { kind: 'pr', number: 2 }, source: '#2' }] }),
+    change(2, { authorClass: 'human', mergedAt: ago(59), remedial: true }),
+    change(3, { authorClass: 'assisted', tool: 'Claude', title: '</script><b>x</b>', durability: { status: 'measured', baseline: 10, surviving: 6, files: [{ path: 'src/a/x.ts', baseline: 10, surviving: 6 }] } }),
+  ];
+  const html = renderHtml(aggregate(snap(changes, { openPrs: [{ number: 9, title: 't', url: 'u', authorClass: 'agent', createdAt: ago(2), awaitingFirstReview: true }] })));
+  for (const heading of ['Durable PRs per week', 'By tool', 'Survival curve', 'Lead time spread', 'Size vs lines kept', 'Who fixed whom', 'Review depth', 'Hotspots', 'Review queue', 'How authorship was decided']) {
+    assert.ok(html.includes(`<h2>${heading}</h2>`), heading);
+  }
+  assert.ok(!html.includes('</script><b>'), 'titles cannot close the data script');
+  assert.ok(!html.includes('"files":'), 'per-file results stay out of the page');
+  assert.ok(html.includes('"header":"repo,kind,id,'), 'the CSV header ships with the page for filtered downloads');
+  assert.match(html, /<option value="Copilot">Copilot<\/option>/);
+
+  const commits = renderHtml(aggregate(snap(changes.map((c) => ({ ...c, kind: 'commit' as const, reviewDepth: null })), { unit: 'commits' })));
+  assert.ok(commits.includes('<h2>Durable commits per week</h2>'));
+  assert.ok(!commits.includes('<h2>Review depth</h2>'), 'no review data in commit mode');
+  assert.ok(!commits.includes('Rubber-stamped'));
 });

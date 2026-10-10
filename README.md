@@ -115,6 +115,10 @@ In commit mode there are no labels or PR authors: a commit is **agent** if its g
 
 Dependency bots (Dependabot, Renovate…) are excluded from all metrics. AI review bots (Copilot review, CodeRabbit…, see `botReviewers`) don't count as a first review.
 
+## The dashboard
+
+`index.html` is a single static page with no external requests. Tiles show the headline numbers with their change since the previous period. Below them: durable changes per week (count, rate, or each author's share), the per-author rates with 95% ranges, the survival curve, lead-time spread, size against lines kept, who fixed whom, review depth, hotspots, the review queue, and a change table you can search, filter, sort, link to (filters live in the URL) and download as CSV.
+
 ## What else the report shows
 
 - **By tool.** Every metric per AI tool (Claude, Copilot, Codex, Cursor, Devin…), read from whatever marked the change as AI-written. Map your own agents with `tools`.

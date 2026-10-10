@@ -37,6 +37,8 @@ export const duration = (hours: number | null) => {
 // ---- Wording that depends on the unit ------------------------------------------
 
 export interface Nouns {
+  /** "PR" or "commit", mid-sentence */
+  singular: string;
   /** "PRs" or "commits" */
   plural: string;
   /** Row label for the count */
@@ -55,8 +57,8 @@ export interface Nouns {
 
 export function nouns(unit: Report['unit']): Nouns {
   return unit === Unit.Commits
-    ? { plural: 'commits', count: 'Commits', heading: 'Commits', column: 'Commit', date: 'Landed', landing: 'landing', size: 'Commit size (p50)' }
-    : { plural: 'PRs', count: 'Merged PRs', heading: 'Pull requests', column: 'PR', date: 'Merged', landing: 'merging', size: 'PR size (p50)' };
+    ? { singular: 'commit', plural: 'commits', count: 'Commits', heading: 'Commits', column: 'Commit', date: 'Landed', landing: 'landing', size: 'Commit size (p50)' }
+    : { singular: 'PR', plural: 'PRs', count: 'Merged PRs', heading: 'Pull requests', column: 'PR', date: 'Merged', landing: 'merging', size: 'PR size (p50)' };
 }
 
 interface Row {
@@ -74,7 +76,7 @@ export function rows(r: Report): Row[] {
     { label: 'Surviving lines / week', hint: `Added lines from matured ${n.plural} still there after ${r.windowDays} days`, value: (s) => num(s.survivingLinesPerWeek, 0) },
     { label: 'Durable rate', hint: `Share of matured ${n.plural} that were durable`, value: (s) => pct(s.durableRate) },
     { label: 'Line churn', hint: 'Share of all added lines gone by the end of the window (big changes weigh more)', value: (s) => pct(s.churn) },
-    { label: 'Lines kept (p50)', hint: `Median share of a ${n.column.toLowerCase()}'s lines kept by the end of the window (every change weighs the same)`, value: (s) => pct(s.keptP50) },
+    { label: 'Lines kept (p50)', hint: `Median share of a ${n.singular}'s lines kept by the end of the window (every change weighs the same)`, value: (s) => pct(s.keptP50) },
     { label: 'Change failure rate', hint: `Matured ${n.plural} reverted, reworked or blamed for a bug within the window`, value: (s) => pct(s.changeFailureRate) },
     { label: 'Failing early', hint: `${n.count} still inside the window that were already reverted or reworked`, value: (s) => String(s.failingEarly) },
     { label: 'Lead time (p50)', hint: `First commit to ${r.unit === Unit.Prs ? 'merge' : 'landing on the branch'}`, value: (s) => duration(s.leadTimeP50Hours) },
@@ -185,9 +187,11 @@ const CSV_COLUMNS: { header: string; value: (c: ReportedChange) => string | numb
   { header: 'rework', value: (c) => c.rework.map((e) => `${e.kind} ${e.source}`).join(CSV_LIST_SEP) },
 ];
 
+export const CSV_HEADER = CSV_COLUMNS.map((col) => col.header).join(',');
+export const csvRow = (c: ReportedChange) => CSV_COLUMNS.map((col) => csvCell(col.value(c))).join(',');
+
 export function renderCsv(r: Report): string {
-  const rows = r.changes.map((c) => CSV_COLUMNS.map((col) => csvCell(col.value(c))).join(','));
-  return [CSV_COLUMNS.map((col) => col.header).join(','), ...rows].join('\n') + '\n';
+  return [CSV_HEADER, ...r.changes.map(csvRow)].join('\n') + '\n';
 }
 
 /** Escapes text for HTML. */

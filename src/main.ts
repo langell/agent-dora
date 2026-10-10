@@ -117,7 +117,8 @@ export async function main(argv: string[]): Promise<void> {
       const snaps: Snapshot[] = [];
       for (const path of dbPaths) await withStore(path, (store) => void snaps.push(...store.loadAllSnapshots()));
       const combined = combineSnapshots(snaps);
-      log(`Combining ${combined.repos?.length ?? 1} repositories: ${(combined.repos ?? [combined.repo]).join(', ')}`);
+      const repos = combined.repos ?? [combined.repo];
+      log(`Combining ${repos.length === 1 ? 'one repository' : `${repos.length} repositories`}: ${repos.join(', ')}`);
       return writeReport(combined, cfg, outDir, log);
     }
     case Command.Classify:

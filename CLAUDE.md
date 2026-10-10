@@ -19,7 +19,7 @@ All new work happens on a branch, never directly on `main`:
 ## Layout
 - `src/constants.ts`: every shared value (see below)
 - `src/collect.ts` picks the unit, then `prs.ts` or `commits.ts` (same `ModeOptions`) builds change records
-  using `durability.ts` and `rework.ts`; `metrics.ts` aggregates
+  using `durability.ts` and `rework.ts`; `metrics.ts` aggregates; `rollup.ts` combines several repositories' snapshots
 - Reports: `report.ts` (formatting, wording, markdown), `report-html.ts` (the dashboard page),
   `report-theme.ts` (design tokens, stylesheet), `report-client.ts` (the browser script, which gets
   everything it shares with the server through the embedded `ui` payload)
