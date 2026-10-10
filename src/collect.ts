@@ -1,4 +1,4 @@
-import { classify, isIgnoredAuthor } from './classify.js';
+import { classify, isHumanReview, isIgnoredAuthor } from './classify.js';
 import { commitChanges, directCommitCount } from './commits.js';
 import type { Config } from './config.js';
 import { isoDate, MS_PER_DAY, Unit, UnitSetting } from './constants.js';
@@ -40,7 +40,7 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
 
   log(`Fetching merged PRs for ${repo} since ${isoDate(since.toISOString())}...`);
   const merged = (await gh.mergedPrs(since, (n) => log(`  ${n} PRs`)))
-    .filter((p) => p.mergedAt && p.baseRefName === branch && !isIgnoredAuthor(p.author, cfg));
+    .filter((p) => p.baseRefName === branch && !isIgnoredAuthor(p.author, cfg));
   const open = (await gh.openPrs()).filter((p) => !p.isDraft && p.baseRefName === branch && !isIgnoredAuthor(p.author, cfg));
   const bugs = await gh.issues(cfg.labels.bug, since);
 
@@ -66,7 +66,7 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
     url: pr.url,
     authorClass: classify(pr, cfg).authorClass,
     createdAt: pr.createdAt,
-    awaitingFirstReview: !pr.reviews.some((r) => r.author !== pr.author),
+    awaitingFirstReview: !pr.reviews.some((r) => isHumanReview(r, pr.author, cfg)),
   }));
 
   const snap: Snapshot = {
@@ -78,6 +78,7 @@ export async function collect({ repoPath, gh, cfg, store, now = new Date(), log 
     since: since.toISOString(),
     windowDays: cfg.windowDays,
     survivalThreshold: cfg.survivalThreshold,
+    minSurvivalLines: cfg.minSurvivalLines,
     changes,
     openPrs,
     notes,

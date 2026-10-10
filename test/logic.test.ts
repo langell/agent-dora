@@ -1,21 +1,24 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { classify, isIgnoredAuthor } from '../src/classify.js';
+import { classify, isHumanReview, isIgnoredAuthor } from '../src/classify.js';
 import { DEFAULT_CONFIG, fileMatcher, globToRegExp } from '../src/config.js';
 import { ClassSource, UnavailableReason } from '../src/constants.js';
-import { aggregate, buildPrRecord, isDurable, median } from '../src/metrics.js';
+import { aggregate, buildPrRecord, changeStatus, isDurable, median } from '../src/metrics.js';
 import { renderHtml } from '../src/report-html.js';
 import { renderMarkdown } from '../src/report.js';
-import { findRework } from '../src/rework.js';
-import type { RawPr, Snapshot } from '../src/types.js';
+import { findRework, looksRemedial, remedialPrs } from '../src/rework.js';
+import type { PrReview, RawPr, Snapshot } from '../src/types.js';
 
 const cfg = DEFAULT_CONFIG;
 const DAY = 86_400_000;
 
+const review = (author: string | null, submittedAt: string, over: Partial<PrReview> = {}): PrReview =>
+  ({ author, submittedAt, isBot: false, state: 'APPROVED', commented: false, ...over });
+
 function pr(over: Partial<RawPr> & { number: number }): RawPr {
   return {
     title: `PR ${over.number}`, body: '', url: `https://github.com/o/r/pull/${over.number}`, author: 'alice',
-    createdAt: '2026-01-01T00:00:00Z', mergedAt: '2026-01-02T00:00:00Z', isDraft: false,
+    createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', mergedAt: '2026-01-02T00:00:00Z', isDraft: false,
     headRefName: 'feature', baseRefName: 'main', labels: [], mergeCommitOid: `m${over.number}`,
     additions: 10, deletions: 2, commitCount: 1, commits: [{ oid: `c${over.number}`, message: 'change', authoredDate: '2026-01-01T00:00:00Z' }],
     reviews: [], ...over,
@@ -31,7 +34,7 @@ test('classify: labels win, then agent author/branch, then assisted trailers', (
   assert.equal(classify(pr({ number: 5, body: '🤖 Generated with [Claude Code](https://claude.com/claude-code)' }), cfg).authorClass, 'assisted');
   assert.equal(classify(pr({ number: 6 }), cfg).authorClass, 'human');
   const labelled = classify(pr({ number: 7, author: 'Copilot', labels: ['AI:None'] }), cfg);
-  assert.deepEqual(labelled, { authorClass: 'human', source: 'label', reason: 'label ai:none' });
+  assert.deepEqual(labelled, { authorClass: 'human', source: 'label', reason: 'label ai:none', tool: null });
   assert.equal(classify(pr({ number: 8, commits: [{ oid: 'x', message: 'Co-authored-by: Bob <bob@x.com>', authoredDate: '' }] }), cfg).authorClass, 'human');
 });
 
@@ -39,9 +42,47 @@ test('classify reports which signal decided', () => {
   const src = (over: Partial<RawPr>) => classify(pr({ number: 1, ...over }), cfg).source;
   assert.equal(src({ labels: ['ai:agent'] }), 'label');
   assert.equal(src({ author: 'Copilot' }), 'author');
-  assert.equal(src({ headRefName: 'claude/x' }), 'branch');
+  assert.equal(src({ headRefName: 'codex/x' }), 'branch');
   assert.equal(src({ body: 'Generated with Claude Code' }), 'trailer');
   assert.equal(src({}), 'none');
+});
+
+test('classify: person-named agents need their address, interactive branch prefixes are not agents', () => {
+  const coAuthor = (line: string) => classify(pr({ number: 1, commits: [{ oid: 'x', message: `fix\n\n${line}`, authoredDate: '' }] }), cfg).authorClass;
+  assert.equal(coAuthor('Co-authored-by: Devin Smith <devin@example.com>'), 'human');
+  assert.equal(coAuthor('Co-authored-by: Claude Dupont <claude@example.fr>'), 'human');
+  assert.equal(coAuthor('Co-authored-by: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>'), 'assisted');
+  assert.equal(coAuthor('Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>'), 'assisted');
+  assert.equal(classify(pr({ number: 2, headRefName: 'claude/eager-fox' }), cfg).authorClass, 'human');
+});
+
+test('classify: conflicting class labels are ignored, not resolved by order', () => {
+  const c = classify(pr({ number: 1, labels: ['ai:agent', 'ai:none'], body: 'Generated with Claude Code' }), cfg);
+  assert.equal(c.authorClass, 'assisted');
+  assert.equal(c.source, 'trailer');
+  assert.match(c.reason, /ignored conflicting labels ai:agent, ai:none/);
+});
+
+test('human reviews exclude the author, bots and AI reviewers', () => {
+  const at = '2026-01-01T00:00:00Z';
+  assert.ok(isHumanReview(review('bob', at), 'alice', cfg));
+  assert.ok(!isHumanReview(review('alice', at), 'alice', cfg));
+  assert.ok(!isHumanReview(review('Alice', at), 'alice', cfg));
+  assert.ok(!isHumanReview(review(null, at), 'alice', cfg));
+  assert.ok(!isHumanReview(review('copilot-pull-request-reviewer', at, { isBot: true }), 'alice', cfg));
+  assert.ok(!isHumanReview(review('coderabbitai', at), 'alice', cfg), 'listed in botReviewers');
+  assert.ok(!isHumanReview(review('some-app[bot]', at), 'alice', cfg));
+  assert.ok(!isHumanReview(review('claude', at), 'alice', cfg), 'agent accounts are not human reviewers');
+});
+
+test('time to first review skips bot reviews', () => {
+  const raw = pr({
+    number: 1, createdAt: '2026-01-01T00:00:00Z', mergedAt: '2026-01-03T00:00:00Z',
+    reviews: [review('copilot-pull-request-reviewer', '2026-01-01T00:05:00Z', { isBot: true }), review('bob', '2026-01-02T00:00:00Z')],
+  });
+  const rec = buildPrRecord(raw, { authorClass: 'human', source: ClassSource.None, reason: '', tool: null }, [], { status: 'pending', baseline: 0, surviving: 0 }, cfg);
+  assert.equal(rec.firstReviewAt, '2026-01-02T00:00:00.000Z');
+  assert.equal(rec.reviewWaitHours, 24);
 });
 
 test('ignored authors', () => {
@@ -79,6 +120,32 @@ test('rework: git reverts, GitHub revert PRs, rework labels, caused-by', () => {
   assert.deepEqual(byTarget(3), ['rework']);
   assert.deepEqual(byTarget(4), ['bug']);
   assert.equal(events.filter((e) => Number(e.target) >= 10).length, 0);
+  const sources = events.map((e) => `${e.target}<-${e.source}`).sort();
+  assert.deepEqual(sources, ['1<-rrr999', '2<-#10', '3<-#11', '4<-issue #50']);
+  assert.deepEqual(events.find((e) => e.target === 4)!.from, { kind: 'issue', number: 50 });
+
+  // Reverts and fixes are remedial: they don't count as durable output.
+  assert.deepEqual([...remedialPrs(merged, events, cfg)].sort((a, b) => a - b), [10, 11]);
+});
+
+test('a revert commit that landed through a PR is credited to that PR', () => {
+  const merged = [pr({ number: 1, mergeCommitOid: 'aaa111' }), pr({ number: 2, mergeCommitOid: 'bbb222', title: 'Undo it', mergedAt: '2026-01-04T00:00:00Z' })];
+  const reverts = [{ oid: 'bbb222', at: '2026-01-04T00:00:00Z', subject: 'Undo it', reverts: ['aaa111'] }];
+  const events = findRework(merged, [], reverts, (s) => s, cfg);
+  assert.deepEqual(events.map((e) => [e.target, e.from, e.source]), [[1, { kind: 'pr', number: 2 }, '#2']]);
+  // ...and a PR reverting its own commit is not rework.
+  assert.equal(findRework(merged, [], [{ ...reverts[0]!, reverts: ['bbb222'] }], (s) => s, cfg).length, 0);
+});
+
+test('looksRemedial recognises reverts and fixes without a known target', () => {
+  assert.ok(looksRemedial('Revert "Add search"\n\nThis reverts commit abc1234.'));
+  assert.ok(looksRemedial('Revert "Add search"'));
+  assert.ok(looksRemedial('Fix crash\n\nCaused-by: 1a2b3c4'));
+  assert.ok(looksRemedial('Fix crash\n\nCaused-by: #12'));
+  assert.ok(looksRemedial('Undo\n\nReverts o/r#12'));
+  assert.ok(!looksRemedial('Add search'));
+  // Global regexes must not carry state between calls.
+  assert.ok(looksRemedial('Fix\n\nCaused-by: #12') && looksRemedial('Fix\n\nCaused-by: #12'));
 });
 
 test('rework before the target merged is ignored', () => {
@@ -95,6 +162,11 @@ test('isDurable', () => {
   // Rework after the window doesn't retroactively fail the PR.
   assert.equal(isDurable(merged, [{ target: 1, kind: 'bug', at: '2026-03-01T00:00:00Z', source: 'x' }], measured(10, 10), cfg), true);
   assert.equal(isDurable(merged, [], { status: 'pending', baseline: 0, surviving: 0 }, cfg), null);
+  // A revert inside the window fails a change at once, before the window ends.
+  assert.equal(isDurable(merged, [{ target: 1, kind: 'revert', at: '2026-01-03T00:00:00Z', source: 'x' }], { status: 'pending', baseline: 0, surviving: 0 }, cfg), false);
+  // Below minSurvivalLines, survival is too noisy to judge on.
+  assert.equal(isDurable(merged, [], measured(3, 1), cfg), true);
+  assert.equal(isDurable(merged, [], measured(3, 1), { ...cfg, minSurvivalLines: 0 }), false);
   assert.equal(isDurable(merged, [], { status: 'unavailable', baseline: 0, surviving: 0, reason: UnavailableReason.NoMeasurableLines }, cfg), true);
   assert.equal(isDurable(merged, [], { status: 'unavailable', baseline: 0, surviving: 0, reason: UnavailableReason.NotInHistory }, cfg), null);
 });
@@ -111,9 +183,9 @@ function snapshot(): Snapshot {
   const rec = (n: number, cls: 'agent' | 'assisted' | 'human', daysAgo: number, surviving: number) => {
     const mergedAt = new Date(now - daysAgo * DAY).toISOString();
     const createdAt = new Date(now - daysAgo * DAY - 2 * DAY).toISOString();
-    const raw = pr({ number: n, mergedAt, createdAt, commits: [{ oid: `c${n}`, message: 'x', authoredDate: createdAt }], reviews: [{ submittedAt: new Date(now - daysAgo * DAY - DAY).toISOString(), author: 'bob' }] });
+    const raw = pr({ number: n, mergedAt, createdAt, commits: [{ oid: `c${n}`, message: 'x', authoredDate: createdAt }], reviews: [review('bob', new Date(now - daysAgo * DAY - DAY).toISOString())] });
     const d = daysAgo > 21 ? { status: 'measured' as const, baseline: 10, surviving } : { status: 'pending' as const, baseline: 0, surviving: 0 };
-    return buildPrRecord(raw, { authorClass: cls, source: ClassSource.None, reason: 'test' }, [], d, cfg);
+    return buildPrRecord(raw, { authorClass: cls, source: ClassSource.None, reason: 'test', tool: cls === 'human' ? null : 'Claude' }, [], d, cfg);
   };
   return {
     repo: 'o/r', defaultBranch: 'main', branch: 'main', unit: 'prs', notes: [], collectedAt: new Date(now).toISOString(), since, windowDays: 21, survivalThreshold: 0.7,
@@ -140,6 +212,45 @@ test('aggregate', () => {
   const weeklyDurable = r.weeks.reduce((s, w) => s + w.durable.all, 0);
   assert.equal(weeklyDurable, 3);
   assert.ok(r.weeks.at(-1)!.matured === false);
+});
+
+test('early failures, fixes and reverts are kept out of rates', () => {
+  const snap = snapshot();
+  const now = Date.parse(snap.collectedAt);
+  const failedEarly = buildPrRecord(
+    pr({ number: 20, mergedAt: new Date(now - 3 * DAY).toISOString(), createdAt: new Date(now - 4 * DAY).toISOString() }),
+    { authorClass: 'agent', source: ClassSource.None, reason: '', tool: null },
+    [{ target: 20, kind: 'revert', at: new Date(now - 2 * DAY).toISOString(), source: '#21' }],
+    { status: 'pending', baseline: 0, surviving: 0 }, cfg,
+  );
+  const revertPr = buildPrRecord(
+    pr({ number: 21, mergedAt: new Date(now - 30 * DAY).toISOString() }),
+    { authorClass: 'human', source: ClassSource.None, reason: '', tool: null }, [],
+    { status: 'unavailable', baseline: 0, surviving: 0, reason: UnavailableReason.NoMeasurableLines }, cfg, { remedial: true },
+  );
+  assert.equal(failedEarly.durable, false);
+  assert.equal(changeStatus(failedEarly), 'failed');
+  assert.equal(changeStatus(revertPr), 'remedial');
+  snap.changes.push(failedEarly, revertPr);
+  const r = aggregate(snap);
+  assert.equal(r.stats.all.merged, 7);
+  assert.equal(r.stats.all.remedial, 1);
+  assert.equal(r.stats.all.matured, 4, 'neither the early failure nor the revert is matured');
+  assert.equal(r.stats.all.durable, 3);
+  assert.equal(r.stats.agent.failingEarly, 1);
+  assert.equal(r.stats.agent.changeFailureRate, 0);
+  assert.equal(r.weeks.reduce((s, w) => s + w.merged.all, 0), 6, 'weekly series skips remedial changes');
+});
+
+test('stats: kept p50, surviving lines and windowed reverts', () => {
+  const snap = snapshot();
+  const r = aggregate(snap);
+  // Matured agent changes kept 10/10 and 2/10.
+  assert.equal(r.stats.agent.keptP50, 0.6);
+  assert.ok(Math.abs(r.stats.all.survivingLinesPerWeek! - 31 / r.maturedWeeks) < 1e-9);
+  const late = snap.changes[0]!;
+  late.rework = [{ target: 1, kind: 'revert', at: new Date(Date.parse(late.mergedAt) + 40 * DAY).toISOString(), source: 'x' }];
+  assert.equal(aggregate(snap).stats.agent.reverts, 0, 'a revert after the window is not counted');
 });
 
 test('report renders and escapes', () => {

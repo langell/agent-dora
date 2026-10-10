@@ -11,7 +11,7 @@ export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 
 /** The message `git revert` writes, followed by the reverted SHA. */
-const REVERT_MARKER = 'This reverts commit';
+export const REVERT_MARKER = 'This reverts commit';
 const REVERTED_SHA = new RegExp(`${REVERT_MARKER} ([0-9a-f]{7,40})`, 'g');
 
 // `git log --format` output is split on ASCII unit/record separators, which can't appear in
@@ -139,11 +139,12 @@ export async function movedFiles(repoPath: string, from: string, to: string): Pr
 
 /**
  * Counts lines of `file` at `rev` that `git blame` attributes to any commit in `owners`.
- * Whitespace-only changes are ignored (`-w`) so reformatting doesn't count as churn.
+ * Whitespace-only changes are ignored (`-w`) so reformatting doesn't count as churn, and
+ * lines moved within the file keep their author (`-M`) so reordering code doesn't either.
  * Returns null if the file doesn't exist at `rev`.
  */
 export async function blameCount(repoPath: string, rev: string, file: string, owners: Set<string>): Promise<number | null> {
-  const out = await tryGit(repoPath, ['blame', '-w', '--porcelain', rev, '--', file]);
+  const out = await tryGit(repoPath, ['blame', '-w', '-M', '--porcelain', rev, '--', file]);
   if (out === null) return null;
   let n = 0;
   for (const line of out.split('\n')) {
@@ -216,7 +217,7 @@ export async function commitsIn(repoPath: string, range: string): Promise<{ oid:
   return parseLog(out).map(([oid, authoredAt, message]) => ({ oid: oid!, authoredAt: authoredAt!, message: (message ?? '').trim() }));
 }
 
-/** Lines added plus deleted between two commits, ignoring binary files. */
-export async function diffSize(repoPath: string, from: string, to: string): Promise<number> {
-  return (await numstat(repoPath, from, to)).reduce((n, f) => n + f.added + f.deleted, 0);
+/** Lines added plus deleted between two commits, ignoring binary files and any `ignored` paths. */
+export async function diffSize(repoPath: string, from: string, to: string, ignored: (path: string) => boolean = () => false): Promise<number> {
+  return (await numstat(repoPath, from, to)).filter((f) => !ignored(f.path)).reduce((n, f) => n + f.added + f.deleted, 0);
 }
