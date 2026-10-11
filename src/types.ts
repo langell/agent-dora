@@ -21,6 +21,9 @@ export interface PrCommit {
   oid: string;
   message: string;
   authoredDate: string;
+  /** Git author, which some agents and tools mark (`Cursor Agent`, `Jane (aider)`). */
+  authorName?: string;
+  authorEmail?: string;
 }
 
 export interface PrReview {

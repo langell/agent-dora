@@ -6,8 +6,14 @@ export interface Classifiable {
   labels: string[];
   headRefName: string;
   body: string;
-  commits: { message: string }[];
+  commits: { message: string; authorName?: string; authorEmail?: string }[];
 }
+
+/**
+ * A commit as assisted patterns see it: its message, plus its git author as an `Author:` line,
+ * since some tools mark the author rather than adding a trailer.
+ */
+const commitText = (c: Classifiable['commits'][number]) => (c.authorName ? `${c.message}\nAuthor: ${c.authorName} <${c.authorEmail ?? ''}>` : c.message);
 
 export interface Classification {
   authorClass: AuthorClass;
@@ -19,8 +25,8 @@ export interface Classification {
   tool: string | null;
 }
 
-/** Lines that credit a tool: co-author trailers and "Generated with ..." footers. */
-const CREDIT_LINE = /^.*(?:co-authored-by:|generated with).*$/gim;
+/** Lines that credit a tool: co-author and assisted-by trailers, "Generated with ..." footers, and commit authors. */
+const CREDIT_LINE = /^.*(?:co-authored-by:|assisted-by:|generated with|^author:).*$/gim;
 
 /**
  * Names the AI tool in `evidence` (what marked the change as AI-written), falling back
@@ -29,11 +35,17 @@ const CREDIT_LINE = /^.*(?:co-authored-by:|generated with).*$/gim;
  */
 export function detectTool(evidence: string, pr: Classifiable, cfg: Config): string {
   const tools = Object.entries(cfg.tools).map(([name, p]) => ({ name, re: new RegExp(p, 'i') }));
-  const credits = [pr.body, ...pr.commits.map((c) => c.message)].flatMap((t) => t.match(CREDIT_LINE) ?? []);
+  const credits = [pr.body, ...pr.commits.map(commitText)].flatMap((t) => t.match(CREDIT_LINE) ?? []);
   const texts = [evidence, pr.author ?? '', pr.headRefName, ...credits];
   for (const text of texts) {
-    const hit = tools.find((t) => t.re.test(text));
-    if (hit) return hit.name;
+    // The tool named earliest wins, so a trailer naming the tool and then its model
+    // ("Assisted-by: Crush:claude-sonnet") credits the tool, not the model's maker.
+    let best: { name: string; at: number } | null = null;
+    for (const t of tools) {
+      const at = text.search(t.re);
+      if (at !== -1 && (!best || at < best.at)) best = { name: t.name, at };
+    }
+    if (best) return best.name;
   }
   return OTHER_TOOL;
 }
@@ -97,7 +109,7 @@ export function classify(pr: Classifiable, cfg: Config): Classification {
   if (prefix) return decided(AuthorClass.Agent, ClassSource.Branch, `branch ${prefix}*`, prefix);
 
   const patterns = cfg.assistedPatterns.map((p) => new RegExp(p, 'im'));
-  const texts = [pr.body, ...pr.commits.map((c) => c.message)];
+  const texts = [pr.body, ...pr.commits.map(commitText)];
   for (const re of patterns) {
     for (const t of texts) {
       const m = re.exec(t);
