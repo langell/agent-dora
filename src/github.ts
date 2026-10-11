@@ -65,7 +65,7 @@ const PR_FIELDS = `
   author{login}
   labels(first:${MAX_PR_LABELS}){nodes{name}}
   mergeCommit{oid}
-  commits(first:${MAX_PR_COMMITS}){totalCount nodes{commit{oid message authoredDate}}}
+  commits(first:${MAX_PR_COMMITS}){totalCount nodes{commit{oid message authoredDate author{name email}}}}
   reviews(first:${MAX_PR_REVIEWS}){nodes{submittedAt state body author{__typename login} comments{totalCount}}}
 `;
 
@@ -81,7 +81,7 @@ type PrNode = {
   number: number; title: string; body: string; url: string; createdAt: string; updatedAt: string; mergedAt: string | null;
   isDraft: boolean; headRefName: string; baseRefName: string; additions: number; deletions: number;
   author: { login: string } | null; labels: { nodes: { name: string }[] }; mergeCommit: { oid: string } | null;
-  commits: { totalCount: number; nodes: { commit: { oid: string; message: string; authoredDate: string } }[] };
+  commits: { totalCount: number; nodes: { commit: { oid: string; message: string; authoredDate: string; author?: { name: string | null; email: string | null } | null } }[] };
   reviews: { nodes: ReviewNode[] };
 };
 
@@ -103,7 +103,12 @@ function toRawPr(n: PrNode): RawPr {
     additions: n.additions,
     deletions: n.deletions,
     commitCount: n.commits.totalCount,
-    commits: n.commits.nodes.map((c) => c.commit),
+    commits: n.commits.nodes.map(({ commit: c }) => ({
+      oid: c.oid,
+      message: c.message,
+      authoredDate: c.authoredDate,
+      ...(c.author?.name ? { authorName: c.author.name, authorEmail: c.author.email ?? '' } : {}),
+    })),
     reviews: n.reviews.nodes
       .filter((r): r is ReviewNode & { submittedAt: string } => !!r.submittedAt)
       .map((r) => ({

@@ -55,7 +55,7 @@ export interface Config {
   /**
    * AI tool names, each with a regex (case-insensitive) that recognises it in whatever
    * marked a change as AI-written: the agent login, branch prefix or matched trailer.
-   * Merged key by key with the defaults; the first match in order wins.
+   * Merged key by key with the defaults; the tool named earliest in the evidence wins.
    */
   tools: Record<string, string>;
   /** PR authors excluded from all metrics (dependency bots and other automation). */
@@ -121,53 +121,130 @@ export const DEFAULT_CONFIG: Config = {
     rework: ['rework', 'hotfix', 'regression'],
     bug: ['bug'],
   },
+  // PR author logins of agents that open PRs themselves (a `[bot]` suffix is ignored), plus the
+  // names some of them commit under, which is what commit mode sees.
   agentAuthors: [
-    'Copilot',
-    'copilot-swe-agent',
-    'claude',
-    'devin-ai-integration',
-    'chatgpt-codex-connector',
+    'Copilot', // Copilot coding agent: REST shows the PR author as Copilot...
+    'copilot-swe-agent', // ...GraphQL and commits as copilot-swe-agent
+    'claude', // Claude Code GitHub Action
+    'chatgpt-codex-connector', // OpenAI Codex
     'openai-codex',
-    'cursor',
-    'sweep-ai',
-    'openhands-agent',
-    'google-labs-jules',
+    'cursor', // Cursor cloud agents...
+    'Cursor Agent', // ...which commit as Cursor Agent <cursoragent@cursor.com>
+    'cursoragent',
+    'devin-ai-integration', // Devin...
+    'Devin AI', // ...which commits as Devin AI
+    'google-labs-jules', // Jules
+    'amazon-q-developer', // Amazon Q Developer
+    'kiro-agent', // Kiro
+    'Kiro Agent',
+    'factory-droid', // Factory
+    'Factory Droid',
+    'augmentcode', // Augment
+    'codegen-sh', // Codegen
+    'tembo', // Tembo
+    'charliecreates', // Charlie Labs...
+    'CharlieHelps', // ...which commits as CharlieHelps
+    'kilo-code-bot', // Kilo Code cloud agents...
+    'Kilo Code Cloud', // ...which commit as Kilo Code Cloud
+    'openhands-ai', // OpenHands (current app)
+    'openhands-agent', // OpenHands (older account)
+    'lovable-dev', // Lovable...
+    'gpt-engineer-app', // ...under its earlier name
+    'gemini-cli', // Gemini CLI GitHub Action
+    'sweep-ai', // Sweep
   ],
   // Not `claude/` or `cursor/`: interactive, person-driven tools also create branches with
   // those prefixes, so they'd mark assisted work as agent work. Add them if your team only
-  // uses them for autonomous runs.
+  // uses them for autonomous runs. Agents that open PRs from their own account are caught
+  // by `agentAuthors` whatever their branch is called.
   agentBranchPrefixes: ['codex/', 'copilot/', 'devin/', 'jules/', 'openhands/'],
   assistedPatterns: [
-    // Tool names that are never a person's name...
-    'Co-Authored-By:.*\\b(Copilot|Cursor|Codex|Gemini|Aider|Windsurf)\\b',
-    // ...and, for agents named like people (Claude, Devin, Jules, Amp), their addresses.
-    'noreply@anthropic\\.com',
-    'Co-Authored-By:.*<[^>]*(devin-ai-integration|google-labs-jules|@ampcode\\.com)',
-    'Generated with \\[?Claude Code',
+    // Co-author names that only ever mean a tool...
+    'Co-Authored-By:.*\\b(Copilot|Cursor|Codex|Gemini|Aider|Windsurf|opencode|Crush|Qwen-Coder|Mistral Vibe|Kilo Code|Roo Code|Factory Droid)\\b',
+    // ...and, for every tool (including those named like people: Claude, Devin, Jules, Junie,
+    // Kiro, Amp, Zed, Goose, Charlie), the exact addresses they commit or co-author as. Only
+    // the tools' own addresses, never a whole company domain, which its people also use.
+    [
+      '<[^>]*(',
+      'noreply@anthropic\\.com', // Claude Code
+      '|(noreply|codex)@openai\\.com', // Codex
+      '|cursoragent@cursor\\.com', // Cursor
+      '|\\d+\\+copilot@users\\.noreply\\.github\\.com', // Copilot agent and CLI
+      '|devin-ai-integration|google-labs-jules|amazon-q-developer|kiro-agent|factory-droid|tembo\\[bot\\]|augmentcode\\[bot\\]|lovable-dev|gpt-engineer-app',
+      '|noreply@kiro\\.dev|droid@factory\\.ai|charlie@charlielabs\\.ai|noreply@augmentcode\\.com',
+      '|agent@kilocode\\.ai|noreply@kilo\\.ai|openhands@all-hands\\.dev|it\\+v0agent@vercel\\.com',
+      '|(agent|oz-agent)@warp\\.dev|(amp|noreply)@ampcode\\.com|noreply@aider\\.chat|noreply@opencode\\.ai',
+      '|crush@charm\\.land|goose@(block\\.xyz|aaif\\.ai)|opensource@block\\.xyz|noreply@cline\\.bot',
+      '|(noreply|roomote)@roocode\\.com|cascade@windsurf\\.(ai|com)|noreply@zed\\.dev|junie@(jetbrains\\.com|air\\.dev)',
+      '|vibe@mistral\\.ai|qwen-coder@alibabacloud\\.com',
+      ')[^>]*>',
+    ].join(''),
+    // Footers and trailers tools add to commit messages and PR descriptions.
+    'Generated with \\[?(Claude Code|OpenCode|Codex|Crush)\\b',
+    '^Assisted-by:.*$',
+    // Aider marks the git author name instead: "Jane Doe (aider)".
+    '\\(aider\\)\\s*<',
   ],
+  // Tool names, each with a regex for what marks its work. The tool named earliest in the
+  // evidence wins (ties go to the first listed).
   tools: {
     Claude: 'claude|anthropic',
     Copilot: 'copilot',
     Codex: 'codex|openai|chatgpt',
     Cursor: 'cursor',
     Devin: 'devin',
-    Jules: 'jules',
+    Jules: '\\bjules\\b|google-labs-jules',
+    'Amazon Q': 'amazon-q',
+    Kiro: '\\bkiro',
+    Factory: 'factory-droid|factory droid|factory\\.ai',
     Gemini: 'gemini',
     Aider: 'aider',
-    Windsurf: 'windsurf',
-    OpenHands: 'openhands',
+    Windsurf: 'windsurf|\\bcascade@',
+    OpenHands: 'openhands|all-hands',
     Amp: 'ampcode',
+    Augment: 'augmentcode|\\baugment\\b',
+    Codegen: 'codegen-sh|\\bcodegen\\b',
+    Tembo: '\\btembo\\b',
+    Charlie: 'charliecreates|charliehelps|charlielabs',
+    'Kilo Code': 'kilocode|kilo-code|\\bkilo\\b',
+    Lovable: 'lovable|gpt-engineer',
+    v0: 'v0agent',
+    Warp: '\\bwarp\\b|oz-agent',
+    opencode: 'opencode',
+    Crush: '\\bcrush\\b',
+    Goose: '\\bgoose\\b|block\\.xyz',
+    Cline: '\\bcline\\b',
+    'Roo Code': 'roocode|roomote|roo code',
+    Zed: 'zed\\.dev|zed ai',
+    Junie: '\\bjunie\\b',
+    'Mistral Vibe': 'mistral',
+    'Qwen Code': 'qwen',
   },
   ignoreAuthors: ['dependabot', 'renovate', 'github-actions', 'pre-commit-ci', 'snyk-bot'],
   botReviewers: [
     'copilot-pull-request-reviewer',
     'coderabbitai',
     'gemini-code-assist',
-    'sourcery-ai',
+    'google-gemini-code-assist',
     'greptile-apps',
+    'graphite-app', // Graphite Diamond
     'ellipsis-dev',
-    'qodo-merge-pro',
+    'sourcery-ai',
+    'qodo-code-review',
+    'qodo-free-for-open-source-projects',
     'cubic-dev-ai',
+    'bito-code-review',
+    'codeant-ai',
+    'baz-reviewer',
+    'entelligence-ai-pr-reviews',
+    'windsurf-bot',
+    'macroscopeapp',
+    'llamapreview',
+    'octopus-review',
+    'gitar-bot',
+    'what-the-diff',
+    'korbit-ai',
   ],
   ignoreFiles: [
     '**/package-lock.json',

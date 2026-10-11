@@ -279,3 +279,85 @@ test('dashboard: every panel renders, the payload is slim, and wording follows t
   assert.ok(!commits.includes('<h2>Review depth</h2>'), 'no review data in commit mode');
   assert.ok(!commits.includes('Rubber-stamped'));
 });
+
+test('agent landscape: real-world signatures classify with the right tool', () => {
+  const commit = (message: string, authorName?: string, authorEmail?: string) => ({ oid: 'x', message, authoredDate: '', ...(authorName ? { authorName, authorEmail } : {}) });
+  const trailer = (line: string) => rawPr({ commits: [commit(`Fix it\n\n${line}`)] });
+  const cases: [string, RawPr, 'agent' | 'assisted', string][] = [
+    // Agents that open PRs from their own accounts (GraphQL logins, no [bot]).
+    ['Copilot coding agent', rawPr({ author: 'copilot-swe-agent' }), 'agent', 'Copilot'],
+    ['Cursor cloud agent', rawPr({ author: 'cursor' }), 'agent', 'Cursor'],
+    ['Amazon Q Developer', rawPr({ author: 'amazon-q-developer' }), 'agent', 'Amazon Q'],
+    ['Kiro', rawPr({ author: 'kiro-agent' }), 'agent', 'Kiro'],
+    ['Factory', rawPr({ author: 'factory-droid' }), 'agent', 'Factory'],
+    ['Tembo', rawPr({ author: 'tembo' }), 'agent', 'Tembo'],
+    ['Charlie Labs', rawPr({ author: 'charliecreates' }), 'agent', 'Charlie'],
+    ['Augment', rawPr({ author: 'augmentcode' }), 'agent', 'Augment'],
+    ['Codegen', rawPr({ author: 'codegen-sh' }), 'agent', 'Codegen'],
+    ['Kilo Code cloud', rawPr({ author: 'kilo-code-bot' }), 'agent', 'Kilo Code'],
+    ['OpenHands', rawPr({ author: 'openhands-ai' }), 'agent', 'OpenHands'],
+    ['Lovable (old name)', rawPr({ author: 'gpt-engineer-app' }), 'agent', 'Lovable'],
+    ['Codex cloud (opened as the human)', rawPr({ headRefName: 'codex/fix-login' }), 'agent', 'Codex'],
+    // Co-author trailers from local tools.
+    ['Claude Code', trailer('Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>'), 'assisted', 'Claude'],
+    ['Codex CLI', trailer('Co-authored-by: Codex <noreply@openai.com>'), 'assisted', 'Codex'],
+    ['Cursor', trailer('Co-authored-by: Cursor <cursoragent@cursor.com>'), 'assisted', 'Cursor'],
+    ['Copilot CLI', trailer('Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>'), 'assisted', 'Copilot'],
+    ['Amp', trailer('Co-authored-by: Amp <amp@ampcode.com>\nAmp-Thread-ID: https://ampcode.com/threads/T-1'), 'assisted', 'Amp'],
+    ['opencode', trailer('Co-Authored-By: opencode <noreply@opencode.ai>'), 'assisted', 'opencode'],
+    ['Crush trailer', trailer('Co-Authored-By: Crush <crush@charm.land>'), 'assisted', 'Crush'],
+    ['Crush assisted-by', trailer('Assisted-by: Crush:claude-sonnet'), 'assisted', 'Crush'],
+    ['Goose', trailer('Co-authored-by: Goose <opensource@block.xyz>'), 'assisted', 'Goose'],
+    ['Cline', trailer('Co-authored-by: Cline <noreply@cline.bot>'), 'assisted', 'Cline'],
+    ['Kilo Code', trailer('Co-Authored-By: Kilo Code <noreply@kilo.ai>'), 'assisted', 'Kilo Code'],
+    ['Roo Code', trailer('Co-authored-by: Roo Code <noreply@roocode.com>'), 'assisted', 'Roo Code'],
+    ['Windsurf', trailer('Co-authored-by: Windsurf Cascade <cascade@windsurf.ai>'), 'assisted', 'Windsurf'],
+    ['Zed', trailer('Co-authored-by: Zed AI Agent <noreply@zed.dev>'), 'assisted', 'Zed'],
+    ['Junie', trailer('Co-authored-by: Junie <junie@jetbrains.com>'), 'assisted', 'Junie'],
+    ['Warp', trailer('Co-Authored-By: Warp <agent@warp.dev>'), 'assisted', 'Warp'],
+    ['Mistral Vibe', trailer('Co-Authored-By: Mistral Vibe <vibe@mistral.ai>'), 'assisted', 'Mistral Vibe'],
+    ['Qwen Code', trailer('Co-authored-by: Qwen-Coder <qwen-coder@alibabacloud.com>'), 'assisted', 'Qwen Code'],
+    ['Kiro IDE', trailer('Co-Authored-By: Kiro <noreply@kiro.dev>'), 'assisted', 'Kiro'],
+    ['v0', trailer('Co-authored-by: v0 <it+v0agent@vercel.com>'), 'assisted', 'v0'],
+    ['OpenHands trailer', trailer('Co-authored-by: openhands <openhands@all-hands.dev>'), 'assisted', 'OpenHands'],
+    ['opencode footer', rawPr({ body: '🤖 Generated with [OpenCode](https://opencode.ai)' }), 'assisted', 'opencode'],
+    // Tools that mark the commit author instead of adding a trailer.
+    ['Aider author name', rawPr({ commits: [commit('Fix it', 'Jane Doe (aider)', 'jane@example.com')] }), 'assisted', 'Aider'],
+    ['Copilot agent commits in a human PR', rawPr({ commits: [commit('Fix it', 'copilot-swe-agent[bot]', '198982749+Copilot@users.noreply.github.com')] }), 'assisted', 'Copilot'],
+  ];
+  for (const [name, pr, cls, tool] of cases) {
+    const c = classify(pr, cfg);
+    assert.equal(c.authorClass, cls, `${name}: ${c.reason}`);
+    assert.equal(c.tool, tool, `${name}: tool`);
+  }
+});
+
+test('agent landscape: people who share a name or a company with a tool stay human', () => {
+  const human = (line: string) => classify(rawPr({ commits: [{ oid: 'x', message: `Fix it\n\n${line}`, authoredDate: '' }] }), cfg).authorClass;
+  for (const line of [
+    'Co-authored-by: Junie Park <junie@example.com>',
+    'Co-authored-by: Jules Verne <jules@example.com>',
+    'Co-authored-by: Charlie Brown <charlie@example.com>',
+    'Co-authored-by: Zed Shaw <zed@example.com>',
+    'Co-authored-by: Kiro Tanaka <kiro@example.com>',
+    'Co-authored-by: Sam Altman <sam@openai.com>', // an OpenAI employee, not Codex
+    'Co-authored-by: Jane <jane@warp.dev>', // a Warp employee, not Warp's agent
+    'Co-authored-by: Ana <ana@mistral.ai>',
+  ]) assert.equal(human(line), 'human', line);
+  // A label-classified agent PR on a branch that merely contains a tool's name gets no false tool.
+  assert.equal(classify(rawPr({ labels: ['ai:agent'], headRefName: 'fix/decline-flow' }), cfg).tool, 'Other');
+});
+
+test('agent landscape: review bots and agents that also review never count as human review', async () => {
+  const { isHumanReview } = await import('../src/classify.js');
+  for (const reviewer of ['qodo-code-review', 'graphite-app', 'bito-code-review', 'cursor', 'chatgpt-codex-connector', 'augmentcode', 'amazon-q-developer', 'kilo-code-bot']) {
+    assert.ok(!isHumanReview({ author: reviewer, isBot: false }, 'alice', cfg), reviewer);
+  }
+});
+
+test('tool detection credits the tool before the model it names', () => {
+  const tool = (line: string) => classify(rawPr({ commits: [{ oid: 'x', message: `Fix\n\n${line}`, authoredDate: '' }] }), cfg).tool;
+  assert.equal(tool('Co-Authored-By: OpenCode (claude-sonnet-4) <noreply@opencode.ai>'), 'opencode');
+  assert.equal(tool('Co-authored-by: aider (gpt-5) <noreply@aider.chat>'), 'Aider');
+  assert.equal(tool('Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'), 'Claude');
+});

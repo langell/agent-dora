@@ -6,7 +6,7 @@ Once agents write much of your code, the classic DORA metrics are easy to inflat
 
 | Author | Meaning |
 |---|---|
-| **Agent** | A coding agent opened the PR (Copilot coding agent, Claude, Codex, Devin, Cursor, Jules…) |
+| **Agent** | A coding agent opened the PR (Copilot, Claude, Codex, Cursor, Devin, Jules, Amazon Q, Kiro, Factory… [30+ recognized](#recognized-agents-and-tools)) |
 | **Assisted** | A person opened the PR, with AI co-authored commits (e.g. Claude Code's `Co-Authored-By` trailer) |
 | **Human** | No AI signal |
 
@@ -114,10 +114,22 @@ In order of precedence:
 
 1. **Label.** `ai:agent`, `ai:assisted` or `ai:none` on the PR always wins. Use these to correct misclassifications; the label action never overwrites a label a person set. If labels of different classes contradict each other, they're all ignored and the reason says so.
 2. **Agent.** The PR author is a known agent account, or the head branch starts with an agent prefix (`codex/`, `copilot/`, `devin/`, `jules/`, `openhands/`). `claude/` and `cursor/` aren't in the defaults because interactive, person-driven tools create branches with those prefixes too; add them to `agentBranchPrefixes` if your team only uses them for autonomous runs.
-3. **Assisted.** A commit message or the PR body matches an AI marker, such as a `Co-Authored-By` trailer for Copilot, Cursor or Codex, Claude's `noreply@anthropic.com` address, or `Generated with Claude Code`. Agents that share a name with people (Claude, Devin, Jules, Amp) are matched by their address, not their name, so a human co-author named Devin doesn't count.
+3. **Assisted.** A commit message, a commit's author, or the PR body carries an AI marker: a `Co-Authored-By` or `Assisted-by` trailer from a known tool, a footer like `Generated with Claude Code`, a commit authored by an agent inside a person's PR, or Aider's ` (aider)` author name. Tools that share a name with people (Claude, Devin, Jules, Junie, Kiro, Amp, Zed, Goose, Charlie) are matched only by their own addresses, never by name or company domain, so a co-author named Devin, or an engineer at OpenAI, doesn't count.
 4. **Human.** Everything else.
 
-In commit mode there are no labels or PR authors: a commit is **agent** if its git author is a known agent (e.g. `Copilot`), **assisted** if it or any commit it merged has an AI trailer, and **human** otherwise.
+In commit mode there are no labels or PR authors: a commit is **agent** if its git author is a known agent (e.g. `copilot-swe-agent[bot]`, `Cursor Agent`, `Devin AI`), **assisted** if it or any commit it merged has an AI trailer or tool-marked author, and **human** otherwise.
+
+### Recognized agents and tools
+
+Checked against real public PRs and commits in October 2026. Add your own with `agentAuthors`, `assistedPatterns` and `tools`.
+
+| | Recognized by |
+|---|---|
+| **Agents** (open PRs themselves) | Copilot coding agent, Claude Code GitHub Action, OpenAI Codex (also its `codex/` branches, which it opens under your account), Cursor cloud agents, Devin, Jules, Amazon Q Developer, Kiro, Factory, Augment, Codegen, Tembo, Charlie, Kilo Code cloud, OpenHands, Lovable, Gemini CLI action, Sweep |
+| **Assisted** (trailer, footer or commit author) | Claude Code, Codex CLI, Cursor, Copilot CLI, Aider, Amp, opencode, Crush, Goose, Cline, Kilo Code, Roo Code, Windsurf, Zed, Junie, Warp, Augment, Mistral Vibe, Qwen Code, Kiro, v0, OpenHands |
+| **AI reviewers** (never count as a human review) | Copilot review, CodeRabbit, Gemini Code Assist, Greptile, Graphite Diamond, Ellipsis, Sourcery, Qodo, cubic, Bito, CodeAnt, Baz, Entelligence, Windsurf, Macroscope, Korbit and others, plus agents that also review (Cursor Bugbot, Codex, Claude, Devin, Augment, Amazon Q) |
+
+Claude Code on the web also opens PRs under your account, on `claude/` branches; those count as assisted through Claude's trailer, since the same prefix is used by interactive sessions. Trailers can be faked (some repositories stack every AI trailer to collect GitHub achievements), so treat authorship as a strong signal, not proof.
 
 Dependency bots (Dependabot, Renovate…) are excluded from all metrics. AI review bots (Copilot review, CodeRabbit…, see `botReviewers`) don't count as a first review.
 
@@ -127,7 +139,7 @@ Dependency bots (Dependabot, Renovate…) are excluded from all metrics. AI revi
 
 ## What else the report shows
 
-- **By tool.** Every metric per AI tool (Claude, Copilot, Codex, Cursor, Devin…), read from whatever marked the change as AI-written. Map your own agents with `tools`.
+- **By tool.** Every metric per AI tool (Claude, Copilot, Codex, Cursor, Devin and [the rest](#recognized-agents-and-tools)), read from whatever marked the change as AI-written. Map your own agents with `tools`.
 - **This period vs the last.** The headline metrics for the latest `compareDays` (default 28) of matured changes next to the 28 before, computed from the changes themselves, so there's no history to keep.
 - **Who fixed whom.** Reverts, rework and bugs inside the window, by the author class of the change fixed and of the change (or bug report) that fixed it.
 - **Review depth (PR mode).** How many PRs merged with no human review, or a human approval with nothing written ("rubber-stamped"), versus reviews that commented or requested changes.

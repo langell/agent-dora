@@ -42,7 +42,7 @@ export async function commitChanges(
   const tick = progress(log, units.length);
   return mapLimit(units, GIT_CONCURRENCY, async ({ c, merged, owners }): Promise<ChangeRecord> => {
     const cls = classify(
-      { author: c.authorName, labels: [], headRefName: '', body: '', commits: [{ message: c.message }, ...merged] },
+      { author: c.authorName, labels: [], headRefName: '', body: '', commits: [{ message: c.message, authorName: c.authorName, authorEmail: c.authorEmail }, ...merged] },
       cfg,
     );
     // The commits a change carries are already known here, so durability needn't look them up.
