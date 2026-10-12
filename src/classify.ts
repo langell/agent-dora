@@ -25,6 +25,16 @@ export interface Classification {
   tool: string | null;
 }
 
+/** The whole line of `text` that contains position `at`: the evidence a pattern matched in. */
+function lineAt(text: string, at: number): string {
+  const start = text.lastIndexOf('\n', at) + 1;
+  const end = text.indexOf('\n', at);
+  return text.slice(start, end === -1 ? undefined : end);
+}
+
+/** An email address in angle brackets, as in a co-author trailer or commit author. */
+const ADDRESS = /<[^<>\s]+@[^<>\s]+>/;
+
 /** Lines that credit a tool: co-author and assisted-by trailers, "Generated with ..." footers, and commit authors. */
 const CREDIT_LINE = /^.*(?:co-authored-by:|assisted-by:|generated with|^author:).*$/gim;
 
@@ -38,7 +48,12 @@ export function detectTool(evidence: string, pr: Classifiable, cfg: Config): str
   const credits = [pr.body, ...pr.commits.map(commitText)].flatMap((t) => t.match(CREDIT_LINE) ?? []);
   const texts = [evidence, pr.author ?? '', pr.headRefName, ...credits];
   for (const text of texts) {
-    // The tool named earliest wins, so a trailer naming the tool and then its model
+    // An address names the tool that wrote the line, even when the name is the model's:
+    // opencode running Muse Spark writes "Muse Spark 1.3 <noreply@opencode.ai>".
+    const address = ADDRESS.exec(text)?.[0];
+    const byAddress = address && tools.find((t) => t.re.test(address));
+    if (byAddress) return byAddress.name;
+    // Otherwise the tool named earliest wins, so a trailer naming the tool and then its model
     // ("Assisted-by: Crush:claude-sonnet") credits the tool, not the model's maker.
     let best: { name: string; at: number } | null = null;
     for (const t of tools) {
@@ -113,7 +128,7 @@ export function classify(pr: Classifiable, cfg: Config): Classification {
   for (const re of patterns) {
     for (const t of texts) {
       const m = re.exec(t);
-      if (m) return decided(AuthorClass.Assisted, ClassSource.Trailer, `matched /${re.source}/`, m[0]);
+      if (m) return decided(AuthorClass.Assisted, ClassSource.Trailer, `matched /${re.source}/`, lineAt(t, m.index));
     }
   }
 
