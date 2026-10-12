@@ -317,6 +317,16 @@ test('agent landscape: real-world signatures classify with the right tool', () =
     ['Warp', trailer('Co-Authored-By: Warp <agent@warp.dev>'), 'assisted', 'Warp'],
     ['Mistral Vibe', trailer('Co-Authored-By: Mistral Vibe <vibe@mistral.ai>'), 'assisted', 'Mistral Vibe'],
     ['Qwen Code', trailer('Co-authored-by: Qwen-Coder <qwen-coder@alibabacloud.com>'), 'assisted', 'Qwen Code'],
+    ['Grok', trailer('Co-Authored-By: Grok <noreply@x.ai>'), 'assisted', 'Grok'],
+    ['Grok with model', trailer('Co-Authored-By: Grok 4.6 <noreply@x.ai>'), 'assisted', 'Grok'],
+    ['Grok, own address', trailer('Co-authored-by: grok <grok@example.dev>'), 'assisted', 'Grok'],
+    ['Grok footer', rawPr({ body: 'Add engine\n\n🤖 Generated with [Grok](https://grok.x.ai)' }), 'assisted', 'Grok'],
+    ['Grok footer with model', trailer('🤖 Generated with Grok 4.6'), 'assisted', 'Grok'],
+    ['Muse Code', trailer('Co-Authored-By: Muse Code <noreply@muse.dev>'), 'assisted', 'Muse'],
+    ['Muse Spark', trailer('Co-Authored-By: Muse Spark 1.3 Contributor (high) <noreply@meta.com>'), 'assisted', 'Muse'],
+    ['Muse Spark footer', trailer('Generated with Muse Spark (https://muse.spark)'), 'assisted', 'Muse'],
+    ['opencode running Muse Spark', trailer('Co-Authored-By: Muse Spark 1.3 <noreply@opencode.ai>'), 'assisted', 'opencode'],
+    ['Grok Bot (works through Cursor cloud agents)', rawPr({ author: 'cursor', body: 'Requested from Grok Bot' }), 'agent', 'Cursor'],
     ['Kiro IDE', trailer('Co-Authored-By: Kiro <noreply@kiro.dev>'), 'assisted', 'Kiro'],
     ['v0', trailer('Co-authored-by: v0 <it+v0agent@vercel.com>'), 'assisted', 'v0'],
     ['OpenHands trailer', trailer('Co-authored-by: openhands <openhands@all-hands.dev>'), 'assisted', 'OpenHands'],
@@ -343,6 +353,10 @@ test('agent landscape: people who share a name or a company with a tool stay hum
     'Co-authored-by: Sam Altman <sam@openai.com>', // an OpenAI employee, not Codex
     'Co-authored-by: Jane <jane@warp.dev>', // a Warp employee, not Warp's agent
     'Co-authored-by: Ana <ana@mistral.ai>',
+    'Ania and Marta get portraits generated with Grok', // mid-sentence, not a footer
+    '🤖 Generated with Grok Imagine 2.0', // artwork, not code
+    'feat: product imagery generated with Muse Image', // artwork, not code
+    'Co-authored-by: Muse Fan <fan@example.com>', // "Muse" alone isn't the tool
   ]) assert.equal(human(line), 'human', line);
   // A label-classified agent PR on a branch that merely contains a tool's name gets no false tool.
   assert.equal(classify(rawPr({ labels: ['ai:agent'], headRefName: 'fix/decline-flow' }), cfg).tool, 'Other');

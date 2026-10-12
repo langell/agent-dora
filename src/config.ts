@@ -161,7 +161,7 @@ export const DEFAULT_CONFIG: Config = {
   agentBranchPrefixes: ['codex/', 'copilot/', 'devin/', 'jules/', 'openhands/'],
   assistedPatterns: [
     // Co-author names that only ever mean a tool...
-    'Co-Authored-By:.*\\b(Copilot|Cursor|Codex|Gemini|Aider|Windsurf|opencode|Crush|Qwen-Coder|Mistral Vibe|Kilo Code|Roo Code|Factory Droid)\\b',
+    'Co-Authored-By:.*\\b(Copilot|Cursor|Codex|Gemini|Grok|Muse Code|Muse Spark|Aider|Windsurf|opencode|Crush|Qwen-Coder|Mistral Vibe|Kilo Code|Roo Code|Factory Droid)\\b',
     // ...and, for every tool (including those named like people: Claude, Devin, Jules, Junie,
     // Kiro, Amp, Zed, Goose, Charlie), the exact addresses they commit or co-author as. Only
     // the tools' own addresses, never a whole company domain, which its people also use.
@@ -177,17 +177,23 @@ export const DEFAULT_CONFIG: Config = {
       '|(agent|oz-agent)@warp\\.dev|(amp|noreply)@ampcode\\.com|noreply@aider\\.chat|noreply@opencode\\.ai',
       '|crush@charm\\.land|goose@(block\\.xyz|aaif\\.ai)|opensource@block\\.xyz|noreply@cline\\.bot',
       '|(noreply|roomote)@roocode\\.com|cascade@windsurf\\.(ai|com)|noreply@zed\\.dev|junie@(jetbrains\\.com|air\\.dev)',
-      '|vibe@mistral\\.ai|qwen-coder@alibabacloud\\.com',
+      '|vibe@mistral\\.ai|qwen-coder@alibabacloud\\.com|noreply@x\\.ai|noreply@muse\\.dev|noreply@meta\\.com',
       ')[^>]*>',
     ].join(''),
     // Footers and trailers tools add to commit messages and PR descriptions.
     'Generated with \\[?(Claude Code|OpenCode|Codex|Crush)\\b',
+    // Grok's footer, at the start of a line: "Generated with Grok" mid-sentence, or for
+    // Grok Imagine artwork, isn't code.
+    '^\\W*Generated with \\[?Grok\\b(?! Imagine)',
+    // Meta's Muse Code and Muse Spark, but not Muse Image artwork.
+    '^\\W*Generated with \\[?Muse (Code|Spark)\\b',
     '^Assisted-by:.*$',
     // Aider marks the git author name instead: "Jane Doe (aider)".
     '\\(aider\\)\\s*<',
   ],
-  // Tool names, each with a regex for what marks its work. The tool named earliest in the
-  // evidence wins (ties go to the first listed).
+  // Tool names, each with a regex for what marks its work. A tool's own address wins (opencode
+  // running Muse Spark writes `Muse Spark <noreply@opencode.ai>`); otherwise the tool named
+  // earliest in the evidence (ties go to the first listed).
   tools: {
     Claude: 'claude|anthropic',
     Copilot: 'copilot',
@@ -199,6 +205,8 @@ export const DEFAULT_CONFIG: Config = {
     Kiro: '\\bkiro',
     Factory: 'factory-droid|factory droid|factory\\.ai',
     Gemini: 'gemini',
+    Grok: '\\bgrok\\b|@x\\.ai|grok\\.x\\.ai',
+    Muse: 'muse code|muse spark|muse\\.dev|muse\\.spark|noreply@meta\\.com',
     Aider: 'aider',
     Windsurf: 'windsurf|\\bcascade@',
     OpenHands: 'openhands|all-hands',
