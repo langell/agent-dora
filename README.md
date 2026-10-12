@@ -126,7 +126,7 @@ Checked against real public PRs and commits in October 2026. Add your own with `
 | | Recognized by |
 |---|---|
 | **Agents** (open PRs themselves) | Copilot coding agent, Claude Code GitHub Action, OpenAI Codex (also its `codex/` branches, which it opens under your account), Cursor cloud agents, Devin, Jules, Amazon Q Developer, Kiro, Factory, Augment, Codegen, Tembo, Charlie, Kilo Code cloud, OpenHands, Lovable, Gemini CLI action, Sweep |
-| **Assisted** (trailer, footer or commit author) | Claude Code, Codex CLI, Cursor, Copilot CLI, Aider, Amp, opencode, Crush, Goose, Cline, Kilo Code, Roo Code, Windsurf, Zed, Junie, Warp, Augment, Mistral Vibe, Qwen Code, Kiro, v0, OpenHands |
+| **Assisted** (trailer, footer or commit author) | Claude Code, Codex CLI, Cursor, Copilot CLI, Grok Build, Aider, Amp, opencode, Crush, Goose, Cline, Kilo Code, Roo Code, Windsurf, Zed, Junie, Warp, Augment, Mistral Vibe, Qwen Code, Kiro, v0, OpenHands |
 | **AI reviewers** (never count as a human review) | Copilot review, CodeRabbit, Gemini Code Assist, Greptile, Graphite Diamond, Ellipsis, Sourcery, Qodo, cubic, Bito, CodeAnt, Baz, Entelligence, Windsurf, Macroscope, Korbit and others, plus agents that also review (Cursor Bugbot, Codex, Claude, Devin, Augment, Amazon Q) |
 
 Claude Code on the web also opens PRs under your account, on `claude/` branches; those count as assisted through Claude's trailer, since the same prefix is used by interactive sessions. Trailers can be faked (some repositories stack every AI trailer to collect GitHub achievements), so treat authorship as a strong signal, not proof.
