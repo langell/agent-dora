@@ -1,6 +1,6 @@
 {
   "name": "agent-dora",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Delivery metrics for teams shipping with AI coding agents: durable throughput, line churn, change failure rate and lead time, split by agent, AI-assisted and human authorship. Recognizes 30+ agents and tools, including Claude Code, Copilot, Codex, Cursor, Grok, Devin, Jules, Amazon Q, Kiro, Amp and Aider. CLI and GitHub Action.",
   "type": "module",
   "license": "MIT",
