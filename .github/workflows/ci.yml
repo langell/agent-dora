@@ -16,6 +16,21 @@ jobs:
         node: [22, 24]
     steps:
       - uses: actions/checkout@v4
+      - name: Parse action and workflow YAML
+        run: |
+          python3 -c "import yaml" 2>/dev/null || { sudo apt-get update && sudo apt-get install -y python3-yaml; }
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+
+          files = [Path("action.yml"), *sorted(Path(".github/workflows").glob("*.yml"))]
+          if len(files) < 2 or any(not path.is_file() for path in files):
+              sys.exit(f"expected action.yml and workflow files, got {[str(p) for p in files]}")
+          for path in files:
+              yaml.safe_load(path.read_text())
+              print(f"parsed {path}")
+          PY
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
